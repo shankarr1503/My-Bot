@@ -85,15 +85,46 @@ DEFAULTS = {
 }
 
 
+def _coerce(default, value):
+    """Return value converted to the type of default, or raise ValueError.
+
+    settings.json is a plain file a user can hand-edit (or that can get
+    corrupted), so nothing in it is trusted to have the right type.
+    """
+    is_num = isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+    elif isinstance(default, int):
+        if is_num:
+            return int(value)
+    elif isinstance(default, float) or default is None:
+        # floats (hunger, happiness) and the nullable numbers x / y /
+        # stats_time - stats_time is an epoch float, so keep floats as-is
+        if is_num or (default is None and value is None):
+            return value if default is None else float(value)
+    elif isinstance(default, str):
+        if isinstance(value, str):
+            return value
+    raise ValueError
+
+
 def load_settings():
     data = dict(DEFAULTS)
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as f:
             saved = json.load(f)
-        if isinstance(saved, dict):
-            data.update({k: saved[k] for k in saved if k in DEFAULTS})
     except (OSError, ValueError):
-        pass
+        return data
+    if isinstance(saved, dict):
+        for key, value in saved.items():
+            if key in DEFAULTS:
+                try:
+                    data[key] = _coerce(DEFAULTS[key], value)
+                except ValueError:
+                    pass                    # bad value -> keep the default
+    if data["character"] not in CHARACTERS:
+        data["character"] = DEFAULTS["character"]
     return data
 
 
@@ -646,8 +677,7 @@ def run_app(settings):
                 m.add_command(label="Play catch game", command=self.play_catch)
                 m.add_command(label="How are you?", command=self.show_stats)
                 m.add_separator()
-            self.pomo_label = tk.StringVar(value="Start focus timer")
-            m.add_command(label="Start focus timer (Pomodoro)",
+            m.add_command(label=self._pomo_menu_text() + " (Pomodoro)",
                           command=self.toggle_pomodoro)
             m.add_command(label="Settings...", command=self.open_settings)
             m.add_separator()
@@ -682,10 +712,19 @@ def run_app(settings):
                 self.root.deiconify()
                 self.root.lift()
 
+            def care_on(item):
+                return bool(self.s.get("care_enabled"))
+
             menu = pystray.Menu(
                 pystray.MenuItem("Show", do(show), default=True),
                 pystray.MenuItem("Say hi", do(self.say_random)),
-                pystray.MenuItem("Focus timer", do(self.toggle_pomodoro)),
+                pystray.MenuItem("Feed", do(self.feed), visible=care_on),
+                pystray.MenuItem("Play catch game", do(self.play_catch),
+                                 visible=care_on),
+                pystray.MenuItem("How are you?", do(self.show_stats),
+                                 visible=care_on),
+                pystray.MenuItem(lambda item: self._pomo_menu_text(),
+                                 do(self.toggle_pomodoro)),
                 pystray.MenuItem("Settings...", do(self.open_settings)),
                 pystray.MenuItem("Quit", do(self.quit)),
             )
@@ -709,6 +748,10 @@ def run_app(settings):
                     pass
             self.say(f"I'm {CHARACTER_LABELS[key]} now!", 4)
 
+        def _pomo_menu_text(self):
+            running = getattr(self, "pomo_state", None) is not None
+            return "Stop focus timer" if running else "Start focus timer"
+
         def toggle_pomodoro(self):
             if self.pomo_state is None:
                 self.pomo_state = "focus"
@@ -717,6 +760,12 @@ def run_app(settings):
             else:
                 self.pomo_state = None
                 self.say("Timer stopped.", 3)
+            self._build_menu()                  # flip Start <-> Stop label
+            if self.tray is not None:
+                try:
+                    self.tray.update_menu()
+                except Exception:
+                    pass
 
         def about(self):
             from tkinter import messagebox
@@ -743,6 +792,7 @@ def run_app(settings):
             self._place_initial()
 
         def _apply_startup(self, enabled, announce=True):
+            """Add/remove the startup entry. Returns True on success."""
             ok = set_run_at_startup(enabled)
             self.s["start_with_windows"] = bool(enabled and ok)
             save_settings(self.s)
@@ -752,6 +802,7 @@ def run_app(settings):
                 else:
                     self.say("Will start with Windows." if enabled
                              else "Won't auto-start anymore.", 4)
+            return ok
 
         def play(self, kind):
             if self.s.get("sound"):
@@ -913,6 +964,10 @@ def run_app(settings):
             # pet care: decay stats, and occasionally ask to be fed
             if self.s["care_enabled"] and self.tick >= self.next_stat:
                 self._decay(15.0 / 60.0)
+                # keep the timestamp in step with the decay just applied, so
+                # any save (drag, settings...) can't make the next launch
+                # count this time again in _apply_offline_decay
+                self.s["stats_time"] = time.time()
                 self.next_stat = self._frames(15)
                 if self.s["hunger"] > 75 and self.tick >= self.next_hungry \
                         and self.bubble is None and self.pomo_state is None:
@@ -1005,13 +1060,31 @@ def run_app(settings):
                       command=w.destroy).pack(side="left", padx=6)
 
         def save(self):
+            from tkinter import messagebox
             app = self.app
-            new_char = self.label_to_key[self.char_var.get()]
-            new_size = int(self.size_var.get())
+            # Read and validate EVERYTHING before changing any setting, so a
+            # typo in one box can't leave the settings half-applied.
+            try:
+                new_char = self.label_to_key[self.char_var.get()]
+                new_size = int(self.size_var.get())
+                break_every = int(self.breakmin_var.get())
+                focus = int(self.focus_var.get())
+            except (tk.TclError, ValueError, KeyError):
+                messagebox.showerror(
+                    APP_NAME, "Please enter whole numbers in the minutes boxes.",
+                    parent=self.w)
+                return
+            if not (10 <= break_every <= 180 and 5 <= focus <= 90):
+                messagebox.showerror(
+                    APP_NAME, "Break reminders: 10-180 minutes.\n"
+                              "Focus length: 5-90 minutes.", parent=self.w)
+                return
+
+            # all valid - apply
             self.s["speech"] = bool(self.speech_var.get())
             self.s["break_reminders"] = bool(self.break_var.get())
-            self.s["break_every"] = int(self.breakmin_var.get())
-            self.s["pomodoro_focus"] = int(self.focus_var.get())
+            self.s["break_every"] = break_every
+            self.s["pomodoro_focus"] = focus
             self.s["care_enabled"] = bool(self.care_var.get())
             self.s["sound"] = bool(self.sound_var.get())
             if new_size != self.s["size"]:
@@ -1019,12 +1092,21 @@ def run_app(settings):
                 app.resize(new_size)
             if new_char != self.s["character"]:
                 app.set_character(new_char)
-            app._apply_startup(bool(self.startup_var.get()))
+            note = "Settings saved!"
+            want_startup = bool(self.startup_var.get())
+            if want_startup != self.s["start_with_windows"]:
+                if not app._apply_startup(want_startup, announce=False):
+                    note = "Saved - but couldn't change the startup setting."
             app.rebuild_schedulers()
             app._build_menu()
+            if app.tray is not None:
+                try:
+                    app.tray.update_menu()      # care items show/hide
+                except Exception:
+                    pass
             save_settings(self.s)
             self.w.destroy()
-            app.say("Settings saved!", 3)
+            app.say(note, 4)
 
     class MiniGame:
         """Catch-the-Treats: treats fall, click them before they hit the

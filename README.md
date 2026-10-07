@@ -69,9 +69,14 @@ python monitor_bot.py --setup      # (or: python setup_wizard.py)
 ```
 
 The wizard walks you through creating a bot with @BotFather, checks your
-token actually works, **auto-detects your chat id** (you just send your bot a
-message), writes `config.py` for you, and can set the bot to start with
+token actually works, **links the bot to your own Telegram account** (it shows
+a one-time code; you send that code to your bot in a private chat and confirm
+it's you), writes `config.py` for you, and can set the bot to start with
 Windows. Then run `python monitor_bot.py` and send `/help` in Telegram.
+
+The one-time code matters: whoever the bot is linked to can take screenshots
+and control the laptop, so the wizard ignores group chats and any message sent
+before setup started.
 
 Prefer to do it by hand? The manual steps are below.
 

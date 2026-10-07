@@ -27,10 +27,19 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
+
+# `--setup` runs the stdlib-only wizard before anything a fresh install may be
+# missing: the third-party packages below, or config.py itself (the wizard is
+# what creates it).
+if __name__ == "__main__" and "--setup" in sys.argv:
+    import setup_wizard
+    setup_wizard.main()
+    sys.exit(0)
 
 import psutil
 from PIL import ImageGrab
@@ -41,7 +50,38 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-import config
+
+def _load_config():
+    """Load config.py from beside this script - or beside the .exe in a
+    PyInstaller build - so the user's edits apply without rebuilding.
+
+    A plain `import config` would freeze the build machine's config.py (and
+    its bot token) into the executable. With no config.py yet, fall back to
+    the defaults in config.example.py; credentials can then still come from
+    the MONITORBOT_* environment variables.
+    """
+    import importlib.util
+    import types
+    if getattr(sys, "frozen", False):
+        here = os.path.dirname(sys.executable)
+        bundle = getattr(sys, "_MEIPASS", here)
+    else:
+        here = bundle = os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, "config.py"),
+                 os.path.join(here, "config.example.py"),
+                 os.path.join(bundle, "config.example.py")):
+        if os.path.exists(path):
+            spec = importlib.util.spec_from_file_location("config", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    return types.SimpleNamespace(
+        BOT_TOKEN="", CHAT_ID="",
+        WATCH_FOLDER=os.path.join(os.path.expanduser("~"), "Downloads"),
+        NET_CHECK_INTERVAL=60, SHUTDOWN_DELAY=30)
+
+
+config = _load_config()
 
 # Let environment variables fill in anything config.py left blank. This lets a
 # packaged build inject credentials without the user editing a .py file.
@@ -696,7 +736,8 @@ def sleep_machine():
 
 
 def message_box(text, title="Message from you"):
-    """Show a desktop pop-up on the laptop. Blocks only this worker thread."""
+    """Show a desktop pop-up on the laptop. Blocks until someone clicks OK,
+    so only ever call it from show_notification's background thread."""
     try:
         MB_OK, MB_TOPMOST, MB_ICONINFO = 0x0, 0x40000, 0x40
         ctypes.windll.user32.MessageBoxW(
@@ -704,6 +745,29 @@ def message_box(text, title="Message from you"):
         return True
     except Exception:
         return False
+
+
+_NOTIFY_SLOTS = threading.BoundedSemaphore(3)   # max pop-ups on screen at once
+
+
+def show_notification(text):
+    """Pop a message box without waiting for anyone to dismiss it.
+
+    The box is modal, and the bot handles one command at a time, so awaiting
+    it would freeze every command - /abort included - until someone at the
+    laptop clicked OK. Returns False if 3 pop-ups are already open.
+    """
+    if not _NOTIFY_SLOTS.acquire(blocking=False):
+        return False
+
+    def run():
+        try:
+            message_box(text)
+        finally:
+            _NOTIFY_SLOTS.release()
+
+    threading.Thread(target=run, daemon=True).start()
+    return True
 
 
 def speak(text):
@@ -843,9 +907,11 @@ async def cmd_clipboard(update, context):
     if not text:
         await update.message.reply_text("Clipboard is empty or unavailable.")
         return
-    if len(text) > TG_LIMIT - 20:
-        text = text[:TG_LIMIT - 20] + "\n...(truncated)"
-    await update.message.reply_text("Clipboard:\n" + text)
+    prefix, marker = "Clipboard:\n", "\n...(truncated)"
+    room = TG_LIMIT - len(prefix)
+    if len(text) > room:
+        text = text[:room - len(marker)] + marker
+    await update.message.reply_text(prefix + text)
 
 
 @owner_only
@@ -854,8 +920,12 @@ async def cmd_notify(update, context):
     if not msg:
         await update.message.reply_text("Usage: /notify your message here")
         return
-    await asyncio.to_thread(message_box, msg)
-    await update.message.reply_text("Shown on the laptop screen.")
+    if show_notification(msg):
+        await update.message.reply_text("Shown on the laptop screen.")
+    else:
+        await update.message.reply_text(
+            "3 messages are already waiting on the laptop screen - "
+            "try again once someone has closed them.")
 
 
 @owner_only
@@ -1413,11 +1483,7 @@ async def on_shutdown(app):
 
 
 def main():
-    if "--setup" in sys.argv:
-        import setup_wizard
-        setup_wizard.main()
-        return
-
+    # (`--setup` is handled at the top of the file, before config loads.)
     if not config.BOT_TOKEN or "PASTE" in config.BOT_TOKEN:
         raise SystemExit(
             "This bot isn't set up yet.\n"
@@ -1450,8 +1516,10 @@ def main():
     app.add_handler(CommandHandler("top", cmd_top))
     app.add_handler(CommandHandler("clipboard", cmd_clipboard))
     app.add_handler(CommandHandler("notify", cmd_notify))
-    app.add_handler(CommandHandler("speak", cmd_speak))
-    app.add_handler(CommandHandler("weather", cmd_weather))
+    # block=False: slow commands run alongside others instead of making
+    # every later command (including /abort) queue behind them.
+    app.add_handler(CommandHandler("speak", cmd_speak, block=False))
+    app.add_handler(CommandHandler("weather", cmd_weather, block=False))
     app.add_handler(CommandHandler("mute", cmd_mute))
     app.add_handler(CommandHandler("volup", cmd_volup))
     app.add_handler(CommandHandler("voldown", cmd_voldown))
@@ -1459,13 +1527,13 @@ def main():
     app.add_handler(CommandHandler("recent", cmd_recent))
     app.add_handler(CommandHandler("ping", cmd_ping))
     # security / antivirus (Microsoft Defender)
-    app.add_handler(CommandHandler("security", cmd_security))
-    app.add_handler(CommandHandler("scan", cmd_scan))
-    app.add_handler(CommandHandler("threats", cmd_threats))
-    app.add_handler(CommandHandler("defupdate", cmd_defupdate))
-    app.add_handler(CommandHandler("protect", cmd_protect))
-    app.add_handler(CommandHandler("clean", cmd_clean))
-    app.add_handler(CommandHandler("firewall", cmd_firewall))
+    app.add_handler(CommandHandler("security", cmd_security, block=False))
+    app.add_handler(CommandHandler("scan", cmd_scan, block=False))
+    app.add_handler(CommandHandler("threats", cmd_threats, block=False))
+    app.add_handler(CommandHandler("defupdate", cmd_defupdate, block=False))
+    app.add_handler(CommandHandler("protect", cmd_protect, block=False))
+    app.add_handler(CommandHandler("clean", cmd_clean, block=False))
+    app.add_handler(CommandHandler("firewall", cmd_firewall, block=False))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(CommandHandler("myid", cmd_myid))
 

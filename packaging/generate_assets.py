@@ -143,9 +143,11 @@ def make_ico():
     # multi-resolution .ico for the executable
     sizes = [16, 24, 32, 48, 64, 128, 256]
     imgs = [icon(s, rounded=True) for s in sizes]
-    imgs[0].save(os.path.join(OUT, "app.ico"),
-                 sizes=[(s, s) for s in sizes],
-                 append_images=imgs[1:])
+    # The base image must be the largest: Pillow skips any requested size
+    # bigger than the image it is saving from.
+    imgs[-1].save(os.path.join(OUT, "app.ico"),
+                  sizes=[(s, s) for s in sizes],
+                  append_images=imgs[:-1])
     print("  wrote app.ico", sizes)
 
 

@@ -103,10 +103,15 @@ no consumer-store reviewer or buyer will do. Distribute it as a download:
 ```
 pyinstaller packaging/MonitorBot.spec
 ```
-Zip `dist\MonitorBot\` with the `README.md` and a blank `config.py`. Users
-unzip, add their token (or set the `MONITORBOT_TOKEN` / `MONITORBOT_CHAT_ID`
-environment variables), and run `MonitorBot.exe`. Host the zip on GitHub
-Releases, itch.io, or your own site.
+Zip `dist\MonitorBot\` with the `README.md`. Users unzip and run
+`MonitorBot.exe --setup` once: the wizard checks their token, links their own
+Telegram account with a one-time code, and writes `config.py` beside the
+`.exe`. After that, plain `MonitorBot.exe` starts the bot. (Alternatively they
+can set the `MONITORBOT_TOKEN` / `MONITORBOT_CHAT_ID` environment variables.)
+Host the zip on GitHub Releases, itch.io, or your own site.
+
+> The build bundles only the blank `config.example.py` template - never your
+> own `config.py` - so your bot token can't leak inside the `.exe` you ship.
 
 If you later want it on the Store too, the path is to add a first-run setup
 wizard that walks the user through creating a bot — but that's a product

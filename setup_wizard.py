@@ -19,14 +19,26 @@ Run it:   python setup_wizard.py
 import json
 import os
 import re
+import secrets
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# In a PyInstaller build, __file__ points inside the temporary bundle folder.
+# The user's config.py must live beside the .exe instead, so it survives
+# restarts and can be edited; the template ships inside the bundle.
+if getattr(sys, "frozen", False):
+    HERE = os.path.dirname(sys.executable)
+    BUNDLE = getattr(sys, "_MEIPASS", HERE)
+else:
+    HERE = BUNDLE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, "config.py")
-EXAMPLE = os.path.join(HERE, "config.example.py")
+EXAMPLE = next((p for p in (os.path.join(HERE, "config.example.py"),
+                            os.path.join(BUNDLE, "config.example.py"))
+                if os.path.exists(p)),
+               os.path.join(HERE, "config.example.py"))
 API = "https://api.telegram.org/bot{token}/{method}"
 
 
@@ -81,12 +93,35 @@ def validate_token(token):
     return None
 
 
+def _skip_queued_updates(token):
+    """Return an offset just past every update already waiting for the bot.
+
+    Anyone can message a bot, so anything queued before setup started must
+    never be mistaken for the owner. Passing this offset to getUpdates also
+    tells Telegram to drop those old updates.
+    """
+    res = tg_call(token, "getUpdates", {"offset": -1, "timeout": 0})
+    if res and res.get("ok") and res.get("result"):
+        return res["result"][-1]["update_id"] + 1
+    return None
+
+
 def detect_chat_id(token, attempts=40, delay=3):
-    """Poll getUpdates until the user messages the bot. Returns the chat id."""
-    print("\nNow open Telegram, find your bot, and send it any message "
-          "(e.g. 'hi').")
-    print("Waiting for your message", end="", flush=True)
-    offset = None
+    """Link the bot to its owner, securely.
+
+    The chat id decides who can take screenshots and control the laptop, so
+    it is only accepted from a PRIVATE chat that sends a fresh one-time code
+    shown here on screen - proof the sender is the person running setup.
+    Messages from groups, channels, or sent before setup began are ignored,
+    and the owner confirms the detected account before it is saved.
+    Returns the chat id as a string, or None.
+    """
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    offset = _skip_queued_updates(token)
+    print("\nOpen Telegram, find your bot, and send it this code:\n")
+    print(f"        {code}\n")
+    print("(Send it in a private chat with the bot - not in a group.)")
+    print("Waiting for the code", end="", flush=True)
     for _ in range(attempts):
         params = {"timeout": 0}
         if offset is not None:
@@ -95,18 +130,25 @@ def detect_chat_id(token, attempts=40, delay=3):
         if res and res.get("ok"):
             for upd in res["result"]:
                 offset = upd["update_id"] + 1
-                for key in ("message", "edited_message", "channel_post"):
-                    msg = upd.get(key)
-                    if msg and msg.get("chat", {}).get("id") is not None:
-                        chat = msg["chat"]
-                        print(" got it!")
-                        name = chat.get("username") or chat.get("first_name") \
-                            or chat.get("title") or "you"
-                        print(f"Detected chat: {name} (id {chat['id']})")
-                        return str(chat["id"])
+                msg = upd.get("message")
+                if not msg:
+                    continue
+                chat = msg.get("chat") or {}
+                if chat.get("type") != "private":
+                    continue
+                if (msg.get("text") or "").strip() != code:
+                    continue
+                print(" got it!")
+                name = chat.get("username") or chat.get("first_name") or "?"
+                if yesno(f"Code received from Telegram account '{name}'. "
+                         "Is that you?", default=True):
+                    tg_call(token, "getUpdates", {"offset": offset, "timeout": 0})
+                    return str(chat["id"])
+                print("Ignored. Waiting for the code from your own account",
+                      end="", flush=True)
         print(".", end="", flush=True)
         time.sleep(delay)
-    print("\nDidn't see a message in time.")
+    print("\nDidn't receive the code in time.")
     return None
 
 
@@ -153,12 +195,15 @@ def offer_autostart():
         return
     try:
         import winreg
-        pyw = sys.executable
-        # prefer pythonw.exe so no console window pops up
-        cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
-        if os.path.exists(cand):
-            pyw = cand
-        cmd = f'"{pyw}" "{os.path.join(HERE, "monitor_bot.py")}"'
+        if getattr(sys, "frozen", False):
+            cmd = f'"{sys.executable}"'          # the packaged MonitorBot.exe
+        else:
+            pyw = sys.executable
+            # prefer pythonw.exe so no console window pops up
+            cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
+            if os.path.exists(cand):
+                pyw = cand
+            cmd = f'"{pyw}" "{os.path.join(HERE, "monitor_bot.py")}"'
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
@@ -209,7 +254,8 @@ def main():
     if not chat_id:
         print("\nNo problem - you can finish this later. Start the bot with")
         print("  python monitor_bot.py")
-        print("send it /myid, and paste the number into config.py as CHAT_ID.")
+        print("send it /myid from your own account, and paste the number into")
+        print("config.py as CHAT_ID. Only paste an id you got that way.")
         chat_id = ask("Or, if you know your chat id, paste it now (optional)")
 
     print("\nSTEP 3 - Save your settings")

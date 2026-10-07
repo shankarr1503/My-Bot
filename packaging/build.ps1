@@ -35,10 +35,12 @@ Set-Location $Repo
 # 1) assets ---------------------------------------------------------------
 Write-Host "`n[1/5] Generating image assets..."
 python (Join-Path $Pkg "generate_assets.py")
+if ($LASTEXITCODE -ne 0) { throw "Asset generation failed (exit $LASTEXITCODE)." }
 
 # 2) build the exe --------------------------------------------------------
 Write-Host "`n[2/5] Building the executable with PyInstaller..."
 pyinstaller --noconfirm --clean (Join-Path $Pkg "DesktopCompanion.spec")
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed (exit $LASTEXITCODE)." }
 
 if ($SkipMsix) {
     Write-Host "`nDone. App is in dist\DesktopCompanion\" -ForegroundColor Green
@@ -54,9 +56,11 @@ New-Item -ItemType Directory -Path (Join-Path $Stage "Images") | Out-Null
 Copy-Item (Join-Path $Repo "dist\DesktopCompanion") `
           (Join-Path $Stage "DesktopCompanion") -Recurse
 
-# manifest, with the version stamped in
+# manifest, with the version stamped in. Only the <Identity> element's
+# Version attribute changes: -creplace is case-sensitive, so the
+# <?xml version="1.0"?> declaration and MinVersion/MaxVersionTested stay intact.
 $manifest = Get-Content (Join-Path $Pkg "AppxManifest.xml") -Raw
-$manifest = $manifest -replace 'Version="[0-9.]+"', "Version=`"$Version`""
+$manifest = $manifest -creplace '(<Identity\b[^>]*?\sVersion=")[0-9.]+(")', ('${1}' + $Version + '${2}')
 Set-Content (Join-Path $Stage "AppxManifest.xml") $manifest -Encoding UTF8
 
 foreach ($img in @("StoreLogo.png","Square44x44Logo.png","Square71x71Logo.png",
@@ -74,6 +78,7 @@ if (-not $makeappx) {
 }
 $msix = Join-Path $Pkg "DesktopCompanion.msix"
 & $makeappx.FullName pack /d $Stage /p $msix /o
+if ($LASTEXITCODE -ne 0) { throw "makeappx failed (exit $LASTEXITCODE)." }
 Write-Host "   -> $msix" -ForegroundColor Green
 
 # 5) optional self-sign for local testing --------------------------------
@@ -91,7 +96,11 @@ if ($SelfSign) {
                           -FilePath $pfx -Password $pwd | Out-Null
     $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" `
                 -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1
+    if (-not $signtool) {
+        throw "signtool.exe not found. Install the Windows 10/11 SDK (see the header)."
+    }
     & $signtool.FullName sign /fd SHA256 /a /f $pfx /p "test1234" $msix
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed (exit $LASTEXITCODE)." }
     Write-Host "`n   Signed. To trust it locally (admin PowerShell):" -ForegroundColor Yellow
     Write-Host "     Import-Certificate -FilePath (your exported .cer) -CertStoreLocation Cert:\LocalMachine\TrustedPeople"
     Write-Host "   Then double-click the .msix to install. For the Store you do NOT sign - Microsoft signs it."

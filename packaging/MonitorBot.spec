@@ -2,19 +2,18 @@
 # Build:  pyinstaller packaging/MonitorBot.spec
 # Output: dist/MonitorBot/MonitorBot.exe
 #
-# The bot reads config.py next to the exe (or MONITORBOT_TOKEN /
-# MONITORBOT_CHAT_ID environment variables), so config.py is bundled as data
-# and can also be edited beside the packaged exe.
+# Configuration is read at run time from config.py BESIDE MonitorBot.exe
+# (created by `MonitorBot.exe --setup`), or from the MONITORBOT_TOKEN /
+# MONITORBOT_CHAT_ID environment variables. Only the blank template
+# config.example.py is bundled - never your real config.py, which holds your
+# bot token and would otherwise ship inside every copy of the .exe.
 
 import os
 
 block_cipher = None
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
-cfg = os.path.join(ROOT, "config.py")
-datas = []
-if os.path.exists(cfg):
-    datas.append((cfg, "."))
+datas = [(os.path.join(ROOT, "config.example.py"), ".")]
 
 a = Analysis(
     [os.path.join(ROOT, "monitor_bot.py")],
@@ -24,7 +23,7 @@ a = Analysis(
     hiddenimports=["telegram.ext", "watchdog.observers", "setup_wizard"],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["pystray"],
+    excludes=["pystray", "config"],     # config.py is loaded at run time
     cipher=block_cipher,
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
