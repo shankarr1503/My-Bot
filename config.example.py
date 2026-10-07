@@ -47,3 +47,9 @@ CAMERA_WARMUP = 8
 #    This asks ipinfo.io where your public IP is, so that service sees your
 #    IP address. It is city-level at best -- see the note in the README.
 LOCATION_ENABLED = True
+
+# 12) How often (seconds) to check Microsoft Defender for new threats and
+#     whether real-time protection is still on. 1800 = every 30 minutes.
+#     Set to 0 to turn the security watch off. The /scan, /security, /threats
+#     etc. commands still work on demand regardless of this setting.
+THREAT_CHECK_INTERVAL = 1800

@@ -133,6 +133,12 @@ Send these to your bot in Telegram:
 | `/kill <app>`  | close an app by name (system-protected) |
 | `/shutdown`    | shut the laptop down (asks first)     |
 | `/abort`       | call off a shutdown                   |
+| `/security`    | Defender protection + firewall + BitLocker |
+| `/scan` `[quick\|full\|path]` | run a Microsoft Defender antivirus scan |
+| `/threats`     | threats Defender has found            |
+| `/clean`       | remove active threats                 |
+| `/defupdate`   | update virus definitions              |
+| `/protect`     | turn real-time protection back on     |
 | `/ping`        | quick are-you-alive check             |
 | `/help`        | command list                          |
 
@@ -160,6 +166,45 @@ Automatic messages you'll receive:
   (change the folder in `config.py` -> `WATCH_FOLDER`)
 - **Shutdown started** - if someone shuts the laptop down at the machine
   (see the warning below)
+
+## Antivirus & security (Microsoft Defender)
+
+The bot can act as your **remote antivirus control**, driving **Microsoft
+Defender** — the protection engine built into Windows 10/11, which scores at
+the **top of independent AV-TEST results**, right alongside K7, McAfee, and
+Bitdefender.
+
+The bot does **not** replace or reimplement an antivirus engine — that is a
+job for a dedicated product with a signature database and kernel drivers.
+Instead it puts a real, world-class engine under your thumb from Telegram:
+
+- `/security` — is real-time protection on, when was the last scan, how old
+  are the definitions, plus Firewall and BitLocker status.
+- `/scan quick` — a Defender quick scan (a few minutes).
+- `/scan full` — a full-system scan in the background.
+- `/scan C:\path\to\file` — scan one file or folder.
+- `/threats` — what Defender has detected, and whether it was cleaned,
+  quarantined, or removed.
+- `/clean` — remove active threats.
+- `/defupdate` — update virus definitions.
+- `/protect` — turn real-time protection back on if it got switched off.
+
+**Automatic:** every 30 minutes (configurable with `THREAT_CHECK_INTERVAL`)
+the bot checks Defender and **alerts you on Telegram** if a threat is detected
+or if real-time protection has been turned off.
+
+> **Run as administrator for the full set.** Status and quick scans work
+> normally, but full/custom scans, updating definitions, removing threats,
+> turning real-time protection on, and reading BitLocker usually need the bot
+> to run elevated. Tamper Protection (in Windows Security) can also block the
+> bot from changing Defender settings — that's Windows protecting you, and is
+> expected.
+
+> **Honesty note for selling it:** describe this as *"control Microsoft
+> Defender from Telegram"*, never as *"our own antivirus like K7/McAfee"*.
+> The protection is genuinely world-class because it **is** Defender — but
+> claiming to be your own AV engine would be inaccurate and would fail store
+> review.
 
 ## Shutting down from Telegram
 

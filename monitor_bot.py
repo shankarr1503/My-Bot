@@ -440,6 +440,13 @@ HELP = (
     "/kill <app> - close an app by name\n"
     "/shutdown - shut down (asks you to confirm)\n"
     "/abort - call off a shutdown\n\n"
+    "SECURITY (Microsoft Defender)\n"
+    "/security - protection status + firewall + BitLocker\n"
+    "/scan [quick|full|<path>] - run an antivirus scan\n"
+    "/threats - threats Defender has found\n"
+    "/clean - remove active threats\n"
+    "/defupdate - update virus definitions\n"
+    "/protect - turn real-time protection back on\n\n"
     "SETUP\n"
     "/myid - show your chat id\n"
     "/help - this message"
@@ -935,6 +942,291 @@ async def cmd_ping(update, context):
     await update.message.reply_text("I'm awake. Laptop is on and the bot is running.")
 
 
+# ======================================================================
+#  Security / Antivirus  -  driven by Microsoft Defender
+# ======================================================================
+#
+# Rather than pretend to be an antivirus, the bot acts as a remote control
+# for Microsoft Defender - the AV engine built into Windows, which rates at
+# the top of independent AV-TEST results. The bot can report protection
+# status, run real scans, update virus definitions, list detected threats,
+# remove them, and alert you when Defender finds something or when real-time
+# protection gets switched off.
+#
+# Note: a few of these (full/custom scan, Update-MpSignature, Remove-MpThreat,
+# turning real-time protection on, reading BitLocker) may need the bot to run
+# as administrator. Status and quick scans work without elevation.
+
+def _ps_run(script, timeout=60):
+    """Run PowerShell and return (returncode, stdout, stderr)."""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=timeout, **PS_FLAGS)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return -2, "", "timed out"
+    except (OSError, subprocess.SubprocessError) as e:
+        return -1, "", str(e)
+
+
+def defender_status_raw():
+    out = _powershell(
+        "$s=Get-MpComputerStatus; [pscustomobject]@{"
+        "svc=$s.AMServiceEnabled; rtp=$s.RealTimeProtectionEnabled;"
+        "av=$s.AntivirusEnabled; asp=$s.AntispywareEnabled; nis=$s.NISEnabled;"
+        "sig=[string]$s.AntivirusSignatureVersion; age=$s.AntivirusSignatureAge;"
+        "quick=[string]$s.QuickScanEndTime; full=[string]$s.FullScanEndTime;"
+        "tamper=$s.IsTamperProtected} | ConvertTo-Json -Compress", timeout=30)
+    try:
+        return json.loads(out) if out else None
+    except ValueError:
+        return None
+
+
+def build_defender_status():
+    d = defender_status_raw()
+    if not d:
+        return ("Microsoft Defender status unavailable.\n"
+                "(Needs Windows with Defender; another AV may have replaced it.)")
+    yn = lambda b: "ON" if b else "OFF"            # noqa: E731
+    return "\n".join([
+        "Microsoft Defender Antivirus",
+        f"  Service running:        {yn(d.get('svc'))}",
+        f"  Real-time protection:   {yn(d.get('rtp'))}",
+        f"  Antivirus / antispyware:{yn(d.get('av'))} / {yn(d.get('asp'))}",
+        f"  Network protection:     {yn(d.get('nis'))}",
+        f"  Tamper protection:      {yn(d.get('tamper'))}",
+        f"  Definitions:            v{d.get('sig','?')}  "
+        f"({d.get('age','?')} day(s) old)",
+        f"  Last quick scan:        {d.get('quick') or 'never'}",
+        f"  Last full scan:         {d.get('full') or 'never'}",
+    ])
+
+
+_SEVERITY = {0: "", 1: "Low", 2: "Moderate", 4: "High", 5: "Severe"}
+_THREAT_STATUS = {
+    0: "Unknown", 1: "Detected", 2: "Cleaned", 3: "Quarantined",
+    4: "Removed", 5: "Allowed", 6: "Blocked", 102: "No action taken",
+    106: "Cleaned (reboot needed)",
+}
+
+
+def build_threats():
+    out = _powershell(
+        "Get-MpThreat | Sort-Object InitialDetectionTime -Descending | "
+        "Select-Object -First 15 ThreatName, SeverityID, ThreatStatusID, "
+        "@{n='t';e={[string]$_.InitialDetectionTime}} | ConvertTo-Json -Compress",
+        timeout=45)
+    if not out:
+        return "No threats on record. Microsoft Defender hasn't flagged anything."
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return "No threats on record."
+    if isinstance(data, dict):
+        data = [data]
+    if not data:
+        return "No threats on record. You're clean."
+    L = [f"Defender threat history ({len(data)} shown)"]
+    for it in data:
+        name = it.get("ThreatName", "?")
+        sev = _SEVERITY.get(it.get("SeverityID"), "")
+        st = _THREAT_STATUS.get(it.get("ThreatStatusID"), str(it.get("ThreatStatusID")))
+        when = it.get("t", "")
+        L.append(f"  • {name}")
+        tag = f"{sev} | " if sev else ""
+        L.append(f"      {tag}{st}   {when}")
+    text = "\n".join(L)
+    return text[:TG_LIMIT - 20] if len(text) > TG_LIMIT else text
+
+
+def run_scan(scan_type="QuickScan", path=None, timeout=1800):
+    if path:
+        safe = path.replace("'", "''")
+        script = f"Start-MpScan -ScanType CustomScan -ScanPath '{safe}'"
+    else:
+        script = f"Start-MpScan -ScanType {scan_type}"
+    rc, _, _ = _ps_run(script, timeout=timeout)
+    return rc
+
+
+def start_full_scan_detached():
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Start-MpScan -ScanType FullScan"], **PS_FLAGS)
+        return True
+    except Exception:
+        return False
+
+
+def update_signatures():
+    rc, out, err = _ps_run("Update-MpSignature; 'OK'", timeout=180)
+    return rc, (err or out)
+
+
+def enable_realtime():
+    rc, _, err = _ps_run(
+        "Set-MpPreference -DisableRealtimeMonitoring $false", timeout=30)
+    return rc == 0, err
+
+
+def remove_threats():
+    rc, out, err = _ps_run("Remove-MpThreat; 'done'", timeout=600)
+    return rc, (err or out)
+
+
+def firewall_status():
+    out = _powershell(
+        "Get-NetFirewallProfile | Select-Object Name,Enabled | "
+        "ConvertTo-Json -Compress", timeout=20)
+    try:
+        data = json.loads(out) if out else []
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        data = [data]
+    return {d.get("Name"): bool(d.get("Enabled")) for d in data}
+
+
+def bitlocker_status():
+    out = _powershell(
+        "try{[string](Get-BitLockerVolume -MountPoint $env:SystemDrive)."
+        "ProtectionStatus}catch{''}", timeout=20)
+    return out or None
+
+
+def build_security_report():
+    L = [build_defender_status(), ""]
+    fw = firewall_status()
+    if fw:
+        bits = ", ".join(f"{k} {'ON' if v else 'OFF'}" for k, v in fw.items())
+        L.append(f"Firewall:  {bits}")
+    else:
+        L.append("Firewall:  status unavailable")
+    bl = bitlocker_status()
+    if bl:
+        nice = {"On": "ON (encrypted)", "Off": "OFF (not encrypted)",
+                "Unknown": "unknown"}.get(bl, bl)
+        L.append(f"BitLocker (system drive):  {nice}")
+    else:
+        L.append("BitLocker:  unavailable (needs admin to read)")
+    return "\n".join(L)
+
+
+@owner_only
+async def cmd_security(update, context):
+    await update.message.reply_text("Checking security posture...")
+    text = await asyncio.to_thread(build_security_report)
+    await update.message.reply_text(text)
+
+
+@owner_only
+async def cmd_scan(update, context):
+    arg = context.args[0].lower() if context.args else "quick"
+    if arg == "full":
+        ok = await asyncio.to_thread(start_full_scan_detached)
+        await update.message.reply_text(
+            "Full scan started in the background. It can take a long time; "
+            "I'll alert you here if Defender finds anything." if ok
+            else "Couldn't start a full scan (try running the bot as admin).")
+        return
+    if arg == "quick":
+        await update.message.reply_text(
+            "Running a Microsoft Defender quick scan... (usually a few minutes)")
+        rc = await asyncio.to_thread(run_scan, "QuickScan", None, 1800)
+    else:
+        path = " ".join(context.args)
+        await update.message.reply_text(f"Scanning {path} with Defender...")
+        rc = await asyncio.to_thread(run_scan, "CustomScan", path, 1800)
+    if rc == -2:
+        await update.message.reply_text("Scan timed out.")
+        return
+    if rc != 0:
+        await update.message.reply_text(
+            "Couldn't complete the scan. Defender may be unavailable, the path "
+            "may be wrong, or the bot may need to run as administrator.")
+        return
+    threats = await asyncio.to_thread(build_threats)
+    await update.message.reply_text("Scan complete. ✅\n\n" + threats)
+
+
+@owner_only
+async def cmd_threats(update, context):
+    await update.message.reply_text(await asyncio.to_thread(build_threats))
+
+
+@owner_only
+async def cmd_defupdate(update, context):
+    await update.message.reply_text("Updating virus definitions...")
+    rc, msg = await asyncio.to_thread(update_signatures)
+    if rc == 0:
+        d = await asyncio.to_thread(defender_status_raw)
+        ver = d.get("sig", "?") if d else "?"
+        await update.message.reply_text(f"Definitions updated. Now at v{ver}.")
+    else:
+        await update.message.reply_text(
+            "Couldn't update definitions (may need admin).\n" + (msg[:300] or ""))
+
+
+@owner_only
+async def cmd_protect(update, context):
+    ok, err = await asyncio.to_thread(enable_realtime)
+    if ok:
+        await update.message.reply_text("Real-time protection is ON.")
+    else:
+        await update.message.reply_text(
+            "Couldn't change real-time protection. This usually needs the bot "
+            "to run as administrator (and Tamper Protection may block it).\n"
+            + (err[:300] or ""))
+
+
+@owner_only
+async def cmd_clean(update, context):
+    await update.message.reply_text("Asking Defender to remove active threats...")
+    rc, msg = await asyncio.to_thread(remove_threats)
+    if rc == 0:
+        await update.message.reply_text(
+            "Remediation finished.\n\n" + await asyncio.to_thread(build_threats))
+    else:
+        await update.message.reply_text(
+            "Couldn't remove threats (may need admin).\n" + (msg[:300] or ""))
+
+
+async def threat_watch_job(context: ContextTypes.DEFAULT_TYPE):
+    """Alert the owner when Defender finds something, or when real-time
+    protection is switched off."""
+    d = await asyncio.to_thread(defender_status_raw)
+    if d is not None:
+        rtp = bool(d.get("rtp"))
+        if not rtp and not context.bot_data.get("rtp_warned"):
+            await context.bot.send_message(
+                config.CHAT_ID,
+                "⚠️ Microsoft Defender real-time protection is OFF.\n"
+                "Send /protect to turn it back on.")
+            context.bot_data["rtp_warned"] = True
+        elif rtp:
+            context.bot_data["rtp_warned"] = False
+
+    # newest detection time; alert if it moved since we last looked
+    latest = await asyncio.to_thread(
+        lambda: _powershell(
+            "$d=Get-MpThreatDetection | Sort-Object InitialDetectionTime "
+            "-Descending | Select-Object -First 1; "
+            "if($d){$d.InitialDetectionTime.ToString('o')}", timeout=30))
+    state = _load_state()
+    seen = state.get("last_threat_seen")
+    if latest and latest != seen:
+        if seen is not None:        # don't alert on the very first baseline
+            threats = await asyncio.to_thread(build_threats)
+            await context.bot.send_message(
+                config.CHAT_ID,
+                "\U0001f6a8 Microsoft Defender detected a threat!\n\n" + threats)
+        state["last_threat_seen"] = latest
+        _save_state(state)
+
+
 _CTRL_HANDLER = None      # must stay referenced or it gets collected
 
 
@@ -1020,6 +1312,12 @@ BOT_COMMANDS = [
     ("kill", "Close an app by name"),
     ("shutdown", "Shut down (confirms)"),
     ("abort", "Cancel a shutdown"),
+    ("security", "Defender + firewall + BitLocker"),
+    ("scan", "Antivirus scan [quick|full|path]"),
+    ("threats", "Threats Defender found"),
+    ("clean", "Remove active threats"),
+    ("defupdate", "Update virus definitions"),
+    ("protect", "Turn real-time protection on"),
     ("ping", "Are you alive?"),
     ("help", "Full command list"),
 ]
@@ -1102,6 +1400,13 @@ def main():
     app.add_handler(CommandHandler("kill", cmd_kill))
     app.add_handler(CommandHandler("recent", cmd_recent))
     app.add_handler(CommandHandler("ping", cmd_ping))
+    # security / antivirus (Microsoft Defender)
+    app.add_handler(CommandHandler("security", cmd_security))
+    app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("threats", cmd_threats))
+    app.add_handler(CommandHandler("defupdate", cmd_defupdate))
+    app.add_handler(CommandHandler("protect", cmd_protect))
+    app.add_handler(CommandHandler("clean", cmd_clean))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(CommandHandler("myid", cmd_myid))
 
@@ -1118,6 +1423,11 @@ def main():
                                         interval=config.APP_REPORT_INTERVAL,
                                         first=90)
             print(f"App report every {config.APP_REPORT_INTERVAL}s")
+        threat_interval = getattr(config, "THREAT_CHECK_INTERVAL", 1800)
+        if threat_interval:
+            app.job_queue.run_repeating(threat_watch_job,
+                                        interval=threat_interval, first=45)
+            print(f"Defender threat watch every {threat_interval}s")
     install_shutdown_guard()
 
     print("Bot running. Press Ctrl+C to stop.")
