@@ -27,6 +27,7 @@ FEATURES
 • Friendly speech bubbles with encouraging little messages.
 • Built-in Pomodoro focus timer (work / break cycles you can customise).
 • Break reminders that nudge you to rest your eyes and move.
+• Cheerful sound effects (fully optional — turn them off anytime).
 • Lives quietly in your system tray — show, hide, or tweak it anytime.
 • Optional start-with-Windows so your companion is always there.
 • Crisp on any display, at any scaling. No account. No sign-up. No ads.

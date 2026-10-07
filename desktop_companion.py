@@ -74,6 +74,8 @@ DEFAULTS = {
     "pomodoro_break": 5,         # minutes of break
     "start_with_windows": False,
     "clickthrough_hint_shown": False,
+    "sound": True,               # play little sound effects
+
     # --- pet care / mini-game state ---
     "care_enabled": True,        # hunger/happiness that you tend to
     "hunger": 30.0,              # 0 = full, 100 = starving
@@ -522,6 +524,7 @@ def run_app(settings):
             self._start_tray()
 
             self.root.deiconify()
+            self.play("hello")
             self.say(random.choice(["Hello! I'm here if you need me.",
                                     "Hi! Right-click me for options."]), 6)
             self.animate()
@@ -750,6 +753,10 @@ def run_app(settings):
                     self.say("Will start with Windows." if enabled
                              else "Won't auto-start anymore.", 4)
 
+        def play(self, kind):
+            if self.s.get("sound"):
+                play_sound(kind)
+
         # ---- pet care (feeding / happiness) ----
         def _apply_offline_decay(self):
             last = self.s.get("stats_time")
@@ -788,6 +795,7 @@ def run_app(settings):
             self.s["happiness"] = min(100.0, self.s["happiness"] + 12.0)
             self._save_stats()
             self.bounce = 1.0
+            self.play("feed")
             self.say(random.choice(FED_LINES), 4)
 
         def play_catch(self):
@@ -814,6 +822,7 @@ def run_app(settings):
                 save_settings(self.s)
                 best = " New best!"
             self.bounce = 1.0
+            self.play("happy")
             self.say(random.choice(PLAY_LINES) + f" ({score} caught){best}", 6)
 
         def show_stats(self):
@@ -883,12 +892,14 @@ def run_app(settings):
 
             # break reminders
             if self.next_break is not None and self.tick >= self.next_break:
+                self.play("alert")
                 self.say(random.choice(BREAK_LINES), 7)
                 self.bounce = 1.0
                 self.next_break = self._frames(self.s["break_every"] * 60)
 
             # pomodoro
             if self.pomo_state is not None and self.tick >= self.pomo_end:
+                self.play("chime")
                 if self.pomo_state == "focus":
                     self.pomo_state = "break"
                     self.pomo_end = self._frames(self.s["pomodoro_break"] * 60)
@@ -974,6 +985,12 @@ def run_app(settings):
                 row=row, column=0, columnspan=2, sticky="w", **pad)
             row += 1
 
+            self.sound_var = tk.BooleanVar(value=self.s["sound"])
+            tk.Checkbutton(w, text="Sound effects",
+                           variable=self.sound_var).grid(
+                row=row, column=0, columnspan=2, sticky="w", **pad)
+            row += 1
+
             self.startup_var = tk.BooleanVar(value=self.s["start_with_windows"])
             tk.Checkbutton(w, text="Start with Windows",
                            variable=self.startup_var).grid(
@@ -996,6 +1013,7 @@ def run_app(settings):
             self.s["break_every"] = int(self.breakmin_var.get())
             self.s["pomodoro_focus"] = int(self.focus_var.get())
             self.s["care_enabled"] = bool(self.care_var.get())
+            self.s["sound"] = bool(self.sound_var.get())
             if new_size != self.s["size"]:
                 self.s["size"] = new_size
                 app.resize(new_size)
@@ -1090,6 +1108,7 @@ def run_app(settings):
                     self.score = max(0, self.score + val)
                     self.canvas.delete(cid)
                     self.treats.remove(t)
+                    self.app.play("catch")
                     self._update_hud()
                     break
 
@@ -1138,6 +1157,43 @@ def run_app(settings):
 # ============================================================================
 #  Start-with-Windows (registry Run key)  -  stdlib only
 # ============================================================================
+
+SOUND_SEQUENCES = {
+    "feed":  [(523, 80), (392, 110)],         # soft "nom nom"
+    "catch": [(880, 60)],                       # bright blip
+    "happy": [(659, 80), (880, 120)],           # rising cheer
+    "alert": [(440, 130), (440, 130)],          # gentle double nudge
+    "chime": [(659, 90), (988, 150)],           # focus-timer chime
+    "hello": [(587, 70), (784, 90)],
+}
+
+
+def play_sound(kind):
+    """Play a short beep sequence on Windows. No-op elsewhere or on failure.
+
+    Uses the stdlib winsound (no extra dependency). Runs on a daemon thread
+    because winsound.Beep blocks for its duration.
+    """
+    if os.name != "nt":
+        return
+    seq = SOUND_SEQUENCES.get(kind)
+    if not seq:
+        return
+    try:
+        import threading
+        import winsound
+    except Exception:
+        return
+
+    def run():
+        for freq, dur in seq:
+            try:
+                winsound.Beep(int(freq), int(dur))
+            except Exception:
+                break
+
+    threading.Thread(target=run, daemon=True).start()
+
 
 def set_run_at_startup(enabled):
     """Add/remove the app from the current-user startup. Returns True on success."""

@@ -38,6 +38,7 @@ A suite of Windows apps:
 | **Catch-the-Treats mini-game** | A quick clicking game — catch falling treats to feed your pet and beat your high score |
 | **Focus timer** | Built-in Pomodoro (customisable work/break lengths) |
 | **Break reminders** | Gentle "stand up and stretch" nudges |
+| **Sound effects** | Little beeps on feeding, catching, and timer chimes (toggleable) |
 | **Start with Windows** | Optional, toggled from Settings (no admin needed) |
 
 Right-click the pet (or the tray icon) for **Feed**, **Play catch game**, and
@@ -139,6 +140,7 @@ Send these to your bot in Telegram:
 | `/clean`       | remove active threats                 |
 | `/defupdate`   | update virus definitions              |
 | `/protect`     | turn real-time protection back on     |
+| `/firewall` `[status\|on\|off]` | control Windows Firewall |
 | `/ping`        | quick are-you-alive check             |
 | `/help`        | command list                          |
 
@@ -179,7 +181,9 @@ job for a dedicated product with a signature database and kernel drivers.
 Instead it puts a real, world-class engine under your thumb from Telegram:
 
 - `/security` — is real-time protection on, when was the last scan, how old
-  are the definitions, plus Firewall and BitLocker status.
+  are the definitions, plus Firewall, BitLocker, and **pending Windows
+  updates**.
+- `/firewall [status|on|off]` — check or control the Windows Firewall.
 - `/scan quick` — a Defender quick scan (a few minutes).
 - `/scan full` — a full-system scan in the background.
 - `/scan C:\path\to\file` — scan one file or folder.

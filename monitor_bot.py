@@ -446,7 +446,8 @@ HELP = (
     "/threats - threats Defender has found\n"
     "/clean - remove active threats\n"
     "/defupdate - update virus definitions\n"
-    "/protect - turn real-time protection back on\n\n"
+    "/protect - turn real-time protection back on\n"
+    "/firewall [status|on|off] - Windows Firewall\n\n"
     "SETUP\n"
     "/myid - show your chat id\n"
     "/help - this message"
@@ -1090,6 +1091,27 @@ def firewall_status():
     return {d.get("Name"): bool(d.get("Enabled")) for d in data}
 
 
+def firewall_set(enabled):
+    """Enable/disable all Windows Firewall profiles. Needs admin."""
+    val = "True" if enabled else "False"
+    rc, _, err = _ps_run(
+        f"Set-NetFirewallProfile -All -Enabled {val}", timeout=30)
+    return rc == 0, err
+
+
+def pending_updates():
+    """Count pending Windows updates via the Update COM API. Best-effort;
+    returns an int, or None if it can't be determined (offline/slow/blocked)."""
+    out = _powershell(
+        "try{$s=New-Object -ComObject Microsoft.Update.Session;"
+        "$r=$s.CreateUpdateSearcher().Search(\"IsInstalled=0 and Type='Software'\");"
+        "$r.Updates.Count}catch{''}", timeout=60)
+    try:
+        return int(out) if out not in ("", None) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def bitlocker_status():
     out = _powershell(
         "try{[string](Get-BitLockerVolume -MountPoint $env:SystemDrive)."
@@ -1112,6 +1134,13 @@ def build_security_report():
         L.append(f"BitLocker (system drive):  {nice}")
     else:
         L.append("BitLocker:  unavailable (needs admin to read)")
+    pu = pending_updates()
+    if pu is None:
+        L.append("Windows updates:  couldn't check right now")
+    elif pu == 0:
+        L.append("Windows updates:  up to date")
+    else:
+        L.append(f"Windows updates:  {pu} pending — install them for security")
     return "\n".join(L)
 
 
@@ -1192,6 +1221,34 @@ async def cmd_clean(update, context):
     else:
         await update.message.reply_text(
             "Couldn't remove threats (may need admin).\n" + (msg[:300] or ""))
+
+
+@owner_only
+async def cmd_firewall(update, context):
+    arg = context.args[0].lower() if context.args else "status"
+    if arg == "status":
+        fw = await asyncio.to_thread(firewall_status)
+        if not fw:
+            await update.message.reply_text("Firewall status unavailable.")
+            return
+        bits = "\n".join(f"  {k}:  {'ON' if v else 'OFF'}"
+                         for k, v in fw.items())
+        await update.message.reply_text("Windows Firewall\n" + bits)
+        return
+    if arg in ("on", "enable"):
+        ok, err = await asyncio.to_thread(firewall_set, True)
+        await update.message.reply_text(
+            "Firewall turned ON for all profiles." if ok
+            else "Couldn't enable the firewall (needs admin).\n" + (err[:300] or ""))
+        return
+    if arg in ("off", "disable"):
+        ok, err = await asyncio.to_thread(firewall_set, False)
+        await update.message.reply_text(
+            "⚠️ Firewall turned OFF for all profiles. Your machine is "
+            "less protected — send /firewall on to re-enable it." if ok
+            else "Couldn't disable the firewall (needs admin).\n" + (err[:300] or ""))
+        return
+    await update.message.reply_text("Usage: /firewall [status|on|off]")
 
 
 async def threat_watch_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1318,6 +1375,7 @@ BOT_COMMANDS = [
     ("clean", "Remove active threats"),
     ("defupdate", "Update virus definitions"),
     ("protect", "Turn real-time protection on"),
+    ("firewall", "Windows Firewall [status|on|off]"),
     ("ping", "Are you alive?"),
     ("help", "Full command list"),
 ]
@@ -1407,6 +1465,7 @@ def main():
     app.add_handler(CommandHandler("defupdate", cmd_defupdate))
     app.add_handler(CommandHandler("protect", cmd_protect))
     app.add_handler(CommandHandler("clean", cmd_clean))
+    app.add_handler(CommandHandler("firewall", cmd_firewall))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(CommandHandler("myid", cmd_myid))
 
