@@ -13,3 +13,14 @@ pet.png
 *.log
 __pycache__/
 *.pyc
+
+# Build / packaging artifacts
+build/
+dist/
+packaging/stage/
+packaging/assets/
+*.msix
+*.appx
+*.pfx
+*.cer
+*.spec.bak

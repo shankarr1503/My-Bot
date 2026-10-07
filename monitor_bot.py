@@ -42,6 +42,13 @@ from watchdog.observers import Observer
 
 import config
 
+# Let environment variables fill in anything config.py left blank. This lets a
+# packaged build inject credentials without the user editing a .py file.
+if not getattr(config, "BOT_TOKEN", "") or "PASTE" in config.BOT_TOKEN:
+    config.BOT_TOKEN = os.environ.get("MONITORBOT_TOKEN", config.BOT_TOKEN)
+if not getattr(config, "CHAT_ID", ""):
+    config.CHAT_ID = os.environ.get("MONITORBOT_CHAT_ID", config.CHAT_ID)
+
 
 # ----------------------------- helpers -----------------------------
 
@@ -406,15 +413,33 @@ def owner_only(func):
 
 HELP = (
     "Laptop Monitor Bot\n\n"
+    "INFO\n"
     "/status - CPU, RAM, disk, battery\n"
-    "/screenshot - photo of the current screen\n"
-    "/photo - webcam photo\n"
+    "/battery - detailed battery / power\n"
+    "/uptime - how long it's been on\n"
     "/disk - usage of every drive\n"
     "/net - internet status\n"
     "/where - Wi-Fi network + approximate location\n"
     "/apps - what is running, open and closed\n"
-    "/shutdown - shut the laptop down (asks you to confirm)\n"
-    "/abort - call off a shutdown\n"
+    "/top - busiest processes right now\n"
+    "/recent - newest files in the watched folder\n"
+    "/weather [city] - current weather\n"
+    "/ping - quick are-you-alive check\n\n"
+    "CAPTURE\n"
+    "/screenshot - photo of the current screen\n"
+    "/photo - webcam photo\n"
+    "/clipboard - read the laptop's clipboard\n\n"
+    "CONTROL\n"
+    "/lock - lock the screen\n"
+    "/sleep - put the laptop to sleep\n"
+    "/notify <msg> - pop a message on the laptop screen\n"
+    "/speak <msg> - say something out loud on the laptop\n"
+    "/mute - toggle mute\n"
+    "/volup [n] /voldown [n] - nudge the volume\n"
+    "/kill <app> - close an app by name\n"
+    "/shutdown - shut down (asks you to confirm)\n"
+    "/abort - call off a shutdown\n\n"
+    "SETUP\n"
     "/myid - show your chat id\n"
     "/help - this message"
 )
@@ -616,6 +641,299 @@ async def app_report_job(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(config.CHAT_ID, text)
 
 
+# ======================================================================
+#  Extra remote-control / convenience features
+# ======================================================================
+
+# Processes we refuse to kill - taking these down can bluescreen or lock
+# you out of the machine. The /kill command is owner-only on top of this.
+PROTECTED = {
+    "system", "system idle process", "wininit.exe", "winlogon.exe",
+    "csrss.exe", "services.exe", "lsass.exe", "smss.exe", "explorer.exe",
+    "svchost.exe", "dwm.exe", "fontdrvhost.exe", "python.exe", "pythonw.exe",
+}
+
+# Media-key virtual codes, used for volume without any extra dependency.
+_VK = {"mute": 0xAD, "down": 0xAE, "up": 0xAF}
+
+
+def _press_media_key(which, times=1):
+    if os.name != "nt":
+        return False
+    try:
+        vk = _VK[which]
+        for _ in range(max(1, times)):
+            ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(vk, 0, 2, 0)   # KEYEVENTF_KEYUP
+        return True
+    except Exception:
+        return False
+
+
+def lock_workstation():
+    try:
+        return bool(ctypes.windll.user32.LockWorkStation())
+    except Exception:
+        return False
+
+
+def sleep_machine():
+    # SetSuspendState(hibernate=False, force=False, wakeup=False)
+    try:
+        ctypes.windll.powrprof.SetSuspendState(0, 0, 0)
+        return True
+    except Exception:
+        return False
+
+
+def message_box(text, title="Message from you"):
+    """Show a desktop pop-up on the laptop. Blocks only this worker thread."""
+    try:
+        MB_OK, MB_TOPMOST, MB_ICONINFO = 0x0, 0x40000, 0x40
+        ctypes.windll.user32.MessageBoxW(
+            0, str(text), str(title), MB_OK | MB_TOPMOST | MB_ICONINFO)
+        return True
+    except Exception:
+        return False
+
+
+def speak(text):
+    """Text-to-speech through Windows' built-in voice."""
+    safe = str(text).replace("'", "''")
+    out = _powershell(
+        "Add-Type -AssemblyName System.Speech; "
+        "(New-Object System.Speech.Synthesis.SpeechSynthesizer)"
+        f".Speak('{safe}')", timeout=30)
+    return out is not None
+
+
+def get_clipboard():
+    return _powershell("Get-Clipboard -Raw", timeout=10)
+
+
+def fetch_weather(city=""):
+    """One-line weather from wttr.in (no API key)."""
+    q = urllib.parse.quote(city.strip())
+    url = f"https://wttr.in/{q}?format=%l:+%c+%t+(feels+%f),+%h+humidity,+wind+%w"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return r.read().decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+
+
+def battery_detail():
+    b = psutil.sensors_battery()
+    if b is None:
+        return "No battery detected (desktop, or driver hidden)."
+    lines = [f"Battery:  {b.percent:.0f}%",
+             "Power:  " + ("charging / plugged in" if b.power_plugged
+                           else "on battery")]
+    if b.secsleft not in (psutil.POWER_TIME_UNLIMITED,
+                          psutil.POWER_TIME_UNKNOWN) and b.secsleft > 0:
+        h, m = divmod(b.secsleft // 60, 60)
+        lines.append(f"Time left:  ~{h}h {m}m")
+    return "\n".join(lines)
+
+
+def uptime_text():
+    boot = datetime.fromtimestamp(psutil.boot_time())
+    delta = datetime.now() - boot
+    d = delta.days
+    h, rem = divmod(delta.seconds, 3600)
+    m = rem // 60
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    parts += [f"{h}h", f"{m}m"]
+    return (f"Booted:  {boot:%Y-%m-%d %H:%M}\n"
+            f"Uptime:  {' '.join(parts)}")
+
+
+def top_processes(n=6):
+    psutil.cpu_percent(interval=None)        # prime the per-process counters
+    procs = list(psutil.process_iter(["name", "memory_info"]))
+    for p in procs:
+        try:
+            p.cpu_percent(None)
+        except Exception:
+            pass
+    time.sleep(0.6)
+    rows = []
+    for p in procs:
+        try:
+            cpu = p.cpu_percent(None)
+            mi = p.info.get("memory_info")
+            rows.append((p.info.get("name") or "?", cpu,
+                         mi.rss if mi else 0))
+        except Exception:
+            continue
+    cores = psutil.cpu_count() or 1
+    by_cpu = sorted(rows, key=lambda r: -r[1])[:n]
+    by_mem = sorted(rows, key=lambda r: -r[2])[:n]
+    L = ["Top by CPU:"]
+    for name, cpu, _ in by_cpu:
+        L.append(f"  {name}  {cpu / cores:.0f}%")
+    L.append("")
+    L.append("Top by memory:")
+    for name, _, mem in by_mem:
+        L.append(f"  {name}  {human_bytes(mem)}")
+    return "\n".join(L)
+
+
+def kill_by_name(name):
+    """Terminate every process whose name matches (case-insensitive)."""
+    name = name.strip().lower()
+    if not name.endswith(".exe"):
+        name += ".exe"
+    if name in PROTECTED:
+        return -1
+    killed = 0
+    for p in psutil.process_iter(["name"]):
+        try:
+            if (p.info.get("name") or "").lower() == name:
+                p.terminate()
+                killed += 1
+        except Exception:
+            continue
+    return killed
+
+
+@owner_only
+async def cmd_lock(update, context):
+    ok = await asyncio.to_thread(lock_workstation)
+    await update.message.reply_text("Laptop locked." if ok
+                                    else "Couldn't lock the workstation.")
+
+
+@owner_only
+async def cmd_sleep(update, context):
+    await update.message.reply_text("Putting the laptop to sleep...")
+    await asyncio.to_thread(sleep_machine)
+
+
+@owner_only
+async def cmd_uptime(update, context):
+    await update.message.reply_text(await asyncio.to_thread(uptime_text))
+
+
+@owner_only
+async def cmd_battery(update, context):
+    await update.message.reply_text(await asyncio.to_thread(battery_detail))
+
+
+@owner_only
+async def cmd_top(update, context):
+    await update.message.reply_text(await asyncio.to_thread(top_processes))
+
+
+@owner_only
+async def cmd_clipboard(update, context):
+    text = await asyncio.to_thread(get_clipboard)
+    if not text:
+        await update.message.reply_text("Clipboard is empty or unavailable.")
+        return
+    if len(text) > TG_LIMIT - 20:
+        text = text[:TG_LIMIT - 20] + "\n...(truncated)"
+    await update.message.reply_text("Clipboard:\n" + text)
+
+
+@owner_only
+async def cmd_notify(update, context):
+    msg = " ".join(context.args) if context.args else ""
+    if not msg:
+        await update.message.reply_text("Usage: /notify your message here")
+        return
+    await asyncio.to_thread(message_box, msg)
+    await update.message.reply_text("Shown on the laptop screen.")
+
+
+@owner_only
+async def cmd_speak(update, context):
+    msg = " ".join(context.args) if context.args else ""
+    if not msg:
+        await update.message.reply_text("Usage: /speak something to say out loud")
+        return
+    await asyncio.to_thread(speak, msg)
+    await update.message.reply_text("Said it out loud.")
+
+
+@owner_only
+async def cmd_weather(update, context):
+    city = " ".join(context.args) if context.args else ""
+    text = await asyncio.to_thread(fetch_weather, city)
+    await update.message.reply_text(text or "Couldn't fetch weather.",
+                                    disable_web_page_preview=True)
+
+
+@owner_only
+async def cmd_mute(update, context):
+    ok = await asyncio.to_thread(_press_media_key, "mute", 1)
+    await update.message.reply_text("Toggled mute." if ok
+                                    else "Couldn't change volume.")
+
+
+@owner_only
+async def cmd_volup(update, context):
+    steps = 3
+    if context.args and context.args[0].isdigit():
+        steps = max(1, min(20, int(context.args[0])))
+    ok = await asyncio.to_thread(_press_media_key, "up", steps)
+    await update.message.reply_text(f"Volume up ({steps} steps)." if ok
+                                    else "Couldn't change volume.")
+
+
+@owner_only
+async def cmd_voldown(update, context):
+    steps = 3
+    if context.args and context.args[0].isdigit():
+        steps = max(1, min(20, int(context.args[0])))
+    ok = await asyncio.to_thread(_press_media_key, "down", steps)
+    await update.message.reply_text(f"Volume down ({steps} steps)." if ok
+                                    else "Couldn't change volume.")
+
+
+@owner_only
+async def cmd_kill(update, context):
+    if not context.args:
+        await update.message.reply_text("Usage: /kill chrome   (name of the app)")
+        return
+    name = context.args[0]
+    n = await asyncio.to_thread(kill_by_name, name)
+    if n == -1:
+        await update.message.reply_text(
+            f"Refused: {name} is a protected system process.")
+    elif n == 0:
+        await update.message.reply_text(f"No running process named '{name}'.")
+    else:
+        await update.message.reply_text(f"Terminated {n} '{name}' process(es).")
+
+
+@owner_only
+async def cmd_recent(update, context):
+    folder = config.WATCH_FOLDER
+    try:
+        items = [(f, os.path.getmtime(os.path.join(folder, f)))
+                 for f in os.listdir(folder)
+                 if os.path.isfile(os.path.join(folder, f))]
+    except OSError:
+        await update.message.reply_text("Can't read the watched folder.")
+        return
+    items.sort(key=lambda x: -x[1])
+    if not items:
+        await update.message.reply_text("No files in the watched folder.")
+        return
+    lines = [f"Recent files in {os.path.basename(folder) or folder}:"]
+    for f, mt in items[:10]:
+        lines.append(f"  {f}   ({datetime.fromtimestamp(mt):%m-%d %H:%M})")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_ping(update, context):
+    await update.message.reply_text("I'm awake. Laptop is on and the bot is running.")
+
+
 _CTRL_HANDLER = None      # must stay referenced or it gets collected
 
 
@@ -678,7 +996,39 @@ async def login_snapshot(app):
         print("Startup webcam failed:", e)
 
 
+BOT_COMMANDS = [
+    ("status", "CPU, RAM, disk, battery"),
+    ("battery", "Detailed battery / power"),
+    ("uptime", "How long it's been on"),
+    ("screenshot", "Photo of the screen"),
+    ("photo", "Webcam photo"),
+    ("clipboard", "Read the clipboard"),
+    ("top", "Busiest processes"),
+    ("apps", "What's running"),
+    ("recent", "Newest downloaded files"),
+    ("where", "Wi-Fi + rough location"),
+    ("net", "Internet status"),
+    ("weather", "Current weather [city]"),
+    ("lock", "Lock the screen"),
+    ("sleep", "Put the laptop to sleep"),
+    ("notify", "Pop a message on screen"),
+    ("speak", "Say something out loud"),
+    ("mute", "Toggle mute"),
+    ("volup", "Volume up"),
+    ("voldown", "Volume down"),
+    ("kill", "Close an app by name"),
+    ("shutdown", "Shut down (confirms)"),
+    ("abort", "Cancel a shutdown"),
+    ("ping", "Are you alive?"),
+    ("help", "Full command list"),
+]
+
+
 async def on_startup(app):
+    try:
+        await app.bot.set_my_commands(BOT_COMMANDS)
+    except Exception as e:
+        print("Could not set command menu:", e)
     if config.CHAT_ID:
         try:
             await app.bot.send_message(config.CHAT_ID, "Laptop online - bot started.")
@@ -727,6 +1077,22 @@ def main():
     app.add_handler(CommandHandler("apps", cmd_apps))
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
     app.add_handler(CommandHandler("abort", cmd_abort))
+    # new feature commands
+    app.add_handler(CommandHandler("lock", cmd_lock))
+    app.add_handler(CommandHandler("sleep", cmd_sleep))
+    app.add_handler(CommandHandler("uptime", cmd_uptime))
+    app.add_handler(CommandHandler("battery", cmd_battery))
+    app.add_handler(CommandHandler("top", cmd_top))
+    app.add_handler(CommandHandler("clipboard", cmd_clipboard))
+    app.add_handler(CommandHandler("notify", cmd_notify))
+    app.add_handler(CommandHandler("speak", cmd_speak))
+    app.add_handler(CommandHandler("weather", cmd_weather))
+    app.add_handler(CommandHandler("mute", cmd_mute))
+    app.add_handler(CommandHandler("volup", cmd_volup))
+    app.add_handler(CommandHandler("voldown", cmd_voldown))
+    app.add_handler(CommandHandler("kill", cmd_kill))
+    app.add_handler(CommandHandler("recent", cmd_recent))
+    app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(CommandHandler("myid", cmd_myid))
 

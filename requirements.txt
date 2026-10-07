@@ -1,5 +1,9 @@
+# --- Desktop Companion (the desktop pet app) ---
+Pillow>=10            # character art + rendering
+pystray>=0.19         # system-tray icon (optional; right-click menu still works without it)
+
+# --- Monitor Bot (Telegram) ---
 python-telegram-bot[job-queue]>=21
-psutil>=5.9
-watchdog>=4
-Pillow>=10
-opencv-python>=4
+psutil>=5.9           # system stats / process list
+watchdog>=4           # watch a folder for new files
+opencv-python>=4      # webcam photo (optional feature)

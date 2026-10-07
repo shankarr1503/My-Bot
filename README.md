@@ -1,10 +1,48 @@
-# Laptop Monitor Bot + Desktop Pet
+# Companion Suite — Desktop Companion + Laptop Monitor Bot
 
-Two things for your Windows laptop:
+A suite of Windows apps:
 
-1. **Monitor bot** — a Telegram bot that reports system health, online/offline
-   status, new files, and screenshots on demand.
-2. **Desktop pet** — a small robot that runs across the top of your screen.
+1. **Desktop Companion** (`desktop_companion.py`) — the flagship, store-ready
+   app. A friendly animated pet with **five characters**, a **system-tray
+   icon**, a **settings window**, drag-anywhere with position memory, speech
+   bubbles, and a built-in **Pomodoro focus timer + break reminders**. Zero
+   setup — just run it. This is the piece packaged for the **Microsoft Store**
+   (see [`packaging/SUBMISSION.md`](packaging/SUBMISSION.md)).
+2. **Monitor Bot** (`monitor_bot.py`) — a Telegram bot that reports system
+   health and gives you 25+ remote commands (screenshots, webcam, lock, sleep,
+   notify, speak, volume, clipboard, weather, kill apps, shutdown, and more).
+3. **Anti-theft sentinel** (`antitheft_sentinel.py`) — alerts you on failed
+   logins, armed from boot.
+
+> **Quick start — Desktop Companion:**
+> ```
+> pip install -r requirements.txt
+> python desktop_companion.py
+> ```
+> Right-click the pet (or its tray icon) for the menu. Double-click it to chat,
+> drag it anywhere. Pick a different pet with `python desktop_companion.py cat`.
+
+---
+
+## Desktop Companion — features
+
+| | |
+|---|---|
+| **5 characters** | Chip the Robot, Momo the Cat, Boo the Ghost, Gloop the Slime, Puddles the Duck |
+| **System tray** | Show / hide / settings / quit, even when the pet is hidden |
+| **Settings window** | Pick pet, size, toggle features, timer lengths, start-with-Windows |
+| **Drag & remember** | Move the pet anywhere; its spot is saved between runs |
+| **Speech bubbles** | Friendly, encouraging one-liners |
+| **Focus timer** | Built-in Pomodoro (customisable work/break lengths) |
+| **Break reminders** | Gentle "stand up and stretch" nudges |
+| **Start with Windows** | Optional, toggled from Settings (no admin needed) |
+
+Settings live in `%APPDATA%\DesktopCompanion\settings.json`. The app collects
+and transmits **no data**. Run `python desktop_companion.py --selftest` to
+render every character to PNGs without opening a window (handy for CI).
+
+The original pets are still here as `desktop_pet.py` (inflatable robot) and
+`desktop_pet_classic.py` (running robot) if you prefer them.
 
 ---
 
@@ -53,15 +91,34 @@ Send these to your bot in Telegram:
 | Command        | What it does                          |
 |----------------|---------------------------------------|
 | `/status`      | CPU, RAM, disk, battery               |
+| `/battery`     | detailed battery / power state        |
+| `/uptime`      | how long the laptop's been on         |
 | `/screenshot`  | photo of the current screen           |
 | `/photo`       | webcam photo                          |
+| `/clipboard`   | read the laptop's clipboard           |
+| `/top`         | busiest processes (CPU + memory)      |
 | `/disk`        | usage of every drive                  |
 | `/net`         | internet status                       |
 | `/where`       | Wi-Fi network + approximate location  |
 | `/apps`        | what is running, open and closed      |
+| `/recent`      | newest files in the watched folder    |
+| `/weather [city]` | current weather (no API key)       |
+| `/lock`        | lock the screen                       |
+| `/sleep`       | put the laptop to sleep               |
+| `/notify <msg>`| pop a message box on the laptop       |
+| `/speak <msg>` | say something out loud on the laptop  |
+| `/mute`        | toggle mute                           |
+| `/volup` `/voldown` `[n]` | nudge the volume           |
+| `/kill <app>`  | close an app by name (system-protected) |
 | `/shutdown`    | shut the laptop down (asks first)     |
 | `/abort`       | call off a shutdown                   |
+| `/ping`        | quick are-you-alive check             |
 | `/help`        | command list                          |
+
+The bot also reads `MONITORBOT_TOKEN` and `MONITORBOT_CHAT_ID` from the
+environment, so a packaged build can inject credentials without editing
+`config.py`. `/kill` refuses critical Windows processes, and every sensitive
+command is still locked to your chat id only.
 
 Automatic messages you'll receive:
 - **Laptop online** when the bot starts
@@ -127,9 +184,11 @@ with Location services switched on - press `Win + R` and run
 strength** show up in the report. Set `LOCATION_ENABLED = False` in
 `config.py` to leave location out of reports entirely.
 
-## The desktop pet
+## The classic pets (legacy)
 
-Run it any time:
+These are the original single-character pets. The new **Desktop Companion**
+(above) supersedes them with multiple characters, a tray, settings, and the
+focus timer — but these still work if you prefer the original robot.
 
 ```
 python desktop_pet.py
@@ -260,6 +319,29 @@ Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy','Bypass','
   in (just pulls the drive) leaves no failed-login trace. For the machine to
   actually resist theft you want BitLocker plus a firmware/BIOS password - a
   script cannot do that job.
+
+## Packaging & selling it
+
+Everything needed to package Desktop Companion for the **Microsoft Store**
+lives in `packaging/`:
+
+```
+python packaging/generate_assets.py       # draw icons, tiles, splash, hero
+.\packaging\build.ps1 -Version 1.0.0.0     # (Windows) exe -> MSIX
+.\packaging\build.ps1 -SelfSign            # build + sign for local testing
+```
+
+- [`packaging/SUBMISSION.md`](packaging/SUBMISSION.md) — full, honest
+  step-by-step: Partner Center account, identity values, build, upload,
+  age rating, privacy policy, and the realistic story for Google Play (which
+  would be an Android rewrite).
+- [`packaging/store-listing.md`](packaging/store-listing.md) — ready-to-paste
+  description and keywords.
+- [`packaging/privacy-policy.md`](packaging/privacy-policy.md) — minimal
+  privacy policy to host (the app collects no data).
+
+The Monitor Bot is distributed separately as a download (it needs each user's
+own Telegram token) — see Part 2 of the submission guide.
 
 ## Notes & limits
 
