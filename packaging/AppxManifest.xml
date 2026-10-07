@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX package manifest for Desktop Companion.
+
+  Three values MUST be replaced before you build, and they must match your
+  Microsoft Partner Center registration exactly (Product > Product identity):
+
+    1. Identity Name           = the Package/Identity/Name from Partner Center
+    2. Identity Publisher       = the Publisher ID (looks like CN=XXXXXXXX-....)
+    3. PublisherDisplayName     = your seller/display name
+
+  Until you have a Partner Center account you can still build and test with a
+  self-signed certificate - see packaging/SUBMISSION.md. The Name/Publisher
+  below are placeholders that only work for local self-signed testing.
+
+  'runFullTrust' is required for a packaged Win32 (desktop) app and triggers
+  the Store's "uses all system resources" notice - that is normal for this
+  category of app.
+-->
+<Package
+    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    IgnorableNamespaces="uap rescap">
+
+  <Identity
+      Name="12345Publisher.DesktopCompanion"
+      Publisher="CN=00000000-0000-0000-0000-000000000000"
+      Version="1.0.0.0"
+      ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Desktop Companion</DisplayName>
+    <PublisherDisplayName>Your Name Here</PublisherDisplayName>
+    <Logo>Images\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="DesktopCompanion"
+                 Executable="DesktopCompanion\DesktopCompanion.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+          DisplayName="Desktop Companion"
+          Description="A friendly desktop pet with a built-in focus timer and break reminders."
+          BackgroundColor="transparent"
+          Square150x150Logo="Images\Square150x150Logo.png"
+          Square44x44Logo="Images\Square44x44Logo.png">
+        <uap:DefaultTile
+            Wide310x150Logo="Images\Wide310x150Logo.png"
+            Square310x310Logo="Images\Square310x310Logo.png"
+            Square71x71Logo="Images\Square71x71Logo.png">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo" />
+            <uap:ShowOn Tile="wide310x150Logo" />
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="Images\SplashScreen.png" BackgroundColor="#6366F1" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

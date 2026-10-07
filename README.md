@@ -1,10 +1,55 @@
-# Laptop Monitor Bot + Desktop Pet
+# Companion Suite — Desktop Companion + Laptop Monitor Bot
 
-Two things for your Windows laptop:
+A suite of Windows apps:
 
-1. **Monitor bot** — a Telegram bot that reports system health, online/offline
-   status, new files, and screenshots on demand.
-2. **Desktop pet** — a small robot that runs across the top of your screen.
+1. **Desktop Companion** (`desktop_companion.py`) — the flagship, store-ready
+   app. A friendly animated pet with **nine characters**, a **system-tray
+   icon**, a **settings window**, drag-anywhere with position memory, speech
+   bubbles, a built-in **Pomodoro focus timer + break reminders**, and a
+   **feed-and-play care system** with a **Catch-the-Treats mini-game**. Zero
+   setup — just run it. This is the piece packaged for the **Microsoft Store**
+   (see [`packaging/SUBMISSION.md`](packaging/SUBMISSION.md)).
+2. **Monitor Bot** (`monitor_bot.py`) — a Telegram bot that reports system
+   health and gives you 25+ remote commands (screenshots, webcam, lock, sleep,
+   notify, speak, volume, clipboard, weather, kill apps, shutdown, and more).
+3. **Anti-theft sentinel** (`antitheft_sentinel.py`) — alerts you on failed
+   logins, armed from boot.
+
+> **Quick start — Desktop Companion:**
+> ```
+> pip install -r requirements.txt
+> python desktop_companion.py
+> ```
+> Right-click the pet (or its tray icon) for the menu. Double-click it to chat,
+> drag it anywhere. Pick a different pet with `python desktop_companion.py cat`.
+
+---
+
+## Desktop Companion — features
+
+| | |
+|---|---|
+| **9 characters** | Robot, Cat, Ghost, Slime, Duck, Fox, Penguin, Dino, Bunny — each with a name |
+| **System tray** | Show / hide / settings / quit, even when the pet is hidden |
+| **Settings window** | Pick pet, size, toggle features, timer lengths, start-with-Windows |
+| **Drag & remember** | Move the pet anywhere; its spot is saved between runs |
+| **Speech bubbles** | Friendly, encouraging one-liners |
+| **Pet care** | Feed your pet and keep it happy; it gets hungry over time and shows its mood |
+| **Catch-the-Treats mini-game** | A quick clicking game — catch falling treats to feed your pet and beat your high score |
+| **Focus timer** | Built-in Pomodoro (customisable work/break lengths) |
+| **Break reminders** | Gentle "stand up and stretch" nudges |
+| **Sound effects** | Little beeps on feeding, catching, and timer chimes (toggleable) |
+| **Start with Windows** | Optional, toggled from Settings (no admin needed) |
+
+Right-click the pet (or the tray icon) for **Feed**, **Play catch game**, and
+**How are you?**. Care and the mini-game can be switched off in Settings.
+
+Settings live in `%APPDATA%\DesktopCompanion\settings.json`. The app collects
+and transmits **no data**. Run `python desktop_companion.py --selftest` to
+render every character to PNGs without opening a window (handy for CI).
+
+The original pets are still here as `desktop_pet.py` (inflatable robot) and
+`desktop_pet_classic.py` (running robot) if you prefer them.
 
 ---
 
@@ -16,25 +61,45 @@ Two things for your Windows laptop:
 
 ---
 
-## Step 1 — Create your Telegram bot
+### Easiest way — the setup wizard
+
+```
+pip install -r requirements.txt
+python monitor_bot.py --setup      # (or: python setup_wizard.py)
+```
+
+The wizard walks you through creating a bot with @BotFather, checks your
+token actually works, **links the bot to your own Telegram account** (it shows
+a one-time code; you send that code to your bot in a private chat and confirm
+it's you), writes `config.py` for you, and can set the bot to start with
+Windows. Then run `python monitor_bot.py` and send `/help` in Telegram.
+
+The one-time code matters: whoever the bot is linked to can take screenshots
+and control the laptop, so the wizard ignores group chats and any message sent
+before setup started.
+
+Prefer to do it by hand? The manual steps are below.
+
+### Manual setup
+
+**Step 1 — Create your Telegram bot**
 
 1. In Telegram, open a chat with **@BotFather**.
 2. Send `/newbot`, pick a name and a username (must end in `bot`).
 3. BotFather replies with a **token** like `123456:ABC-DEF...`. Copy it.
 
-## Step 2 — Install the dependencies
-
-Open Command Prompt in this folder and run:
+**Step 2 — Install the dependencies**
 
 ```
 pip install -r requirements.txt
 ```
 
-## Step 3 — Add your token
+**Step 3 — Add your token**
 
-Open `config.py` and paste your token into `BOT_TOKEN`. Save.
+Open `config.py` and paste your token into `BOT_TOKEN`. Save. (Or set the
+`MONITORBOT_TOKEN` environment variable instead.)
 
-## Step 4 — Find your chat id (one time)
+**Step 4 — Find your chat id (one time)**
 
 1. Run the bot:  `python monitor_bot.py`
 2. In Telegram, open **your** bot and send `/myid`.
@@ -53,15 +118,41 @@ Send these to your bot in Telegram:
 | Command        | What it does                          |
 |----------------|---------------------------------------|
 | `/status`      | CPU, RAM, disk, battery               |
+| `/battery`     | detailed battery / power state        |
+| `/uptime`      | how long the laptop's been on         |
 | `/screenshot`  | photo of the current screen           |
 | `/photo`       | webcam photo                          |
+| `/clipboard`   | read the laptop's clipboard           |
+| `/top`         | busiest processes (CPU + memory)      |
 | `/disk`        | usage of every drive                  |
 | `/net`         | internet status                       |
 | `/where`       | Wi-Fi network + approximate location  |
 | `/apps`        | what is running, open and closed      |
+| `/recent`      | newest files in the watched folder    |
+| `/weather [city]` | current weather (no API key)       |
+| `/lock`        | lock the screen                       |
+| `/sleep`       | put the laptop to sleep               |
+| `/notify <msg>`| pop a message box on the laptop       |
+| `/speak <msg>` | say something out loud on the laptop  |
+| `/mute`        | toggle mute                           |
+| `/volup` `/voldown` `[n]` | nudge the volume           |
+| `/kill <app>`  | close an app by name (system-protected) |
 | `/shutdown`    | shut the laptop down (asks first)     |
 | `/abort`       | call off a shutdown                   |
+| `/security`    | Defender protection + firewall + BitLocker |
+| `/scan` `[quick\|full\|path]` | run a Microsoft Defender antivirus scan |
+| `/threats`     | threats Defender has found            |
+| `/clean`       | remove active threats                 |
+| `/defupdate`   | update virus definitions              |
+| `/protect`     | turn real-time protection back on     |
+| `/firewall` `[status\|on\|off]` | control Windows Firewall |
+| `/ping`        | quick are-you-alive check             |
 | `/help`        | command list                          |
+
+The bot also reads `MONITORBOT_TOKEN` and `MONITORBOT_CHAT_ID` from the
+environment, so a packaged build can inject credentials without editing
+`config.py`. `/kill` refuses critical Windows processes, and every sensitive
+command is still locked to your chat id only.
 
 Automatic messages you'll receive:
 - **Laptop online** when the bot starts
@@ -82,6 +173,47 @@ Automatic messages you'll receive:
   (change the folder in `config.py` -> `WATCH_FOLDER`)
 - **Shutdown started** - if someone shuts the laptop down at the machine
   (see the warning below)
+
+## Antivirus & security (Microsoft Defender)
+
+The bot can act as your **remote antivirus control**, driving **Microsoft
+Defender** — the protection engine built into Windows 10/11, which scores at
+the **top of independent AV-TEST results**, right alongside K7, McAfee, and
+Bitdefender.
+
+The bot does **not** replace or reimplement an antivirus engine — that is a
+job for a dedicated product with a signature database and kernel drivers.
+Instead it puts a real, world-class engine under your thumb from Telegram:
+
+- `/security` — is real-time protection on, when was the last scan, how old
+  are the definitions, plus Firewall, BitLocker, and **pending Windows
+  updates**.
+- `/firewall [status|on|off]` — check or control the Windows Firewall.
+- `/scan quick` — a Defender quick scan (a few minutes).
+- `/scan full` — a full-system scan in the background.
+- `/scan C:\path\to\file` — scan one file or folder.
+- `/threats` — what Defender has detected, and whether it was cleaned,
+  quarantined, or removed.
+- `/clean` — remove active threats.
+- `/defupdate` — update virus definitions.
+- `/protect` — turn real-time protection back on if it got switched off.
+
+**Automatic:** every 30 minutes (configurable with `THREAT_CHECK_INTERVAL`)
+the bot checks Defender and **alerts you on Telegram** if a threat is detected
+or if real-time protection has been turned off.
+
+> **Run as administrator for the full set.** Status and quick scans work
+> normally, but full/custom scans, updating definitions, removing threats,
+> turning real-time protection on, and reading BitLocker usually need the bot
+> to run elevated. Tamper Protection (in Windows Security) can also block the
+> bot from changing Defender settings — that's Windows protecting you, and is
+> expected.
+
+> **Honesty note for selling it:** describe this as *"control Microsoft
+> Defender from Telegram"*, never as *"our own antivirus like K7/McAfee"*.
+> The protection is genuinely world-class because it **is** Defender — but
+> claiming to be your own AV engine would be inaccurate and would fail store
+> review.
 
 ## Shutting down from Telegram
 
@@ -127,9 +259,11 @@ with Location services switched on - press `Win + R` and run
 strength** show up in the report. Set `LOCATION_ENABLED = False` in
 `config.py` to leave location out of reports entirely.
 
-## The desktop pet
+## The classic pets (legacy)
 
-Run it any time:
+These are the original single-character pets. The new **Desktop Companion**
+(above) supersedes them with multiple characters, a tray, settings, and the
+focus timer — but these still work if you prefer the original robot.
 
 ```
 python desktop_pet.py
@@ -260,6 +394,29 @@ Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy','Bypass','
   in (just pulls the drive) leaves no failed-login trace. For the machine to
   actually resist theft you want BitLocker plus a firmware/BIOS password - a
   script cannot do that job.
+
+## Packaging & selling it
+
+Everything needed to package Desktop Companion for the **Microsoft Store**
+lives in `packaging/`:
+
+```
+python packaging/generate_assets.py       # draw icons, tiles, splash, hero
+.\packaging\build.ps1 -Version 1.0.0.0     # (Windows) exe -> MSIX
+.\packaging\build.ps1 -SelfSign            # build + sign for local testing
+```
+
+- [`packaging/SUBMISSION.md`](packaging/SUBMISSION.md) — full, honest
+  step-by-step: Partner Center account, identity values, build, upload,
+  age rating, privacy policy, and the realistic story for Google Play (which
+  would be an Android rewrite).
+- [`packaging/store-listing.md`](packaging/store-listing.md) — ready-to-paste
+  description and keywords.
+- [`packaging/privacy-policy.md`](packaging/privacy-policy.md) — minimal
+  privacy policy to host (the app collects no data).
+
+The Monitor Bot is distributed separately as a download (it needs each user's
+own Telegram token) — see Part 2 of the submission guide.
 
 ## Notes & limits
 
