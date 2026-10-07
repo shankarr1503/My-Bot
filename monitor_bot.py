@@ -25,6 +25,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -1056,8 +1057,16 @@ async def on_shutdown(app):
 
 
 def main():
+    if "--setup" in sys.argv:
+        import setup_wizard
+        setup_wizard.main()
+        return
+
     if not config.BOT_TOKEN or "PASTE" in config.BOT_TOKEN:
-        raise SystemExit("Set BOT_TOKEN in config.py first (get it from @BotFather).")
+        raise SystemExit(
+            "This bot isn't set up yet.\n"
+            "Run the guided setup:   python monitor_bot.py --setup\n"
+            "(or set BOT_TOKEN in config.py manually - get it from @BotFather).")
 
     app = (
         Application.builder()

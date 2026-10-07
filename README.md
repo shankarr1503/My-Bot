@@ -3,9 +3,10 @@
 A suite of Windows apps:
 
 1. **Desktop Companion** (`desktop_companion.py`) — the flagship, store-ready
-   app. A friendly animated pet with **five characters**, a **system-tray
+   app. A friendly animated pet with **nine characters**, a **system-tray
    icon**, a **settings window**, drag-anywhere with position memory, speech
-   bubbles, and a built-in **Pomodoro focus timer + break reminders**. Zero
+   bubbles, a built-in **Pomodoro focus timer + break reminders**, and a
+   **feed-and-play care system** with a **Catch-the-Treats mini-game**. Zero
    setup — just run it. This is the piece packaged for the **Microsoft Store**
    (see [`packaging/SUBMISSION.md`](packaging/SUBMISSION.md)).
 2. **Monitor Bot** (`monitor_bot.py`) — a Telegram bot that reports system
@@ -28,14 +29,19 @@ A suite of Windows apps:
 
 | | |
 |---|---|
-| **5 characters** | Chip the Robot, Momo the Cat, Boo the Ghost, Gloop the Slime, Puddles the Duck |
+| **9 characters** | Robot, Cat, Ghost, Slime, Duck, Fox, Penguin, Dino, Bunny — each with a name |
 | **System tray** | Show / hide / settings / quit, even when the pet is hidden |
 | **Settings window** | Pick pet, size, toggle features, timer lengths, start-with-Windows |
 | **Drag & remember** | Move the pet anywhere; its spot is saved between runs |
 | **Speech bubbles** | Friendly, encouraging one-liners |
+| **Pet care** | Feed your pet and keep it happy; it gets hungry over time and shows its mood |
+| **Catch-the-Treats mini-game** | A quick clicking game — catch falling treats to feed your pet and beat your high score |
 | **Focus timer** | Built-in Pomodoro (customisable work/break lengths) |
 | **Break reminders** | Gentle "stand up and stretch" nudges |
 | **Start with Windows** | Optional, toggled from Settings (no admin needed) |
+
+Right-click the pet (or the tray icon) for **Feed**, **Play catch game**, and
+**How are you?**. Care and the mini-game can be switched off in Settings.
 
 Settings live in `%APPDATA%\DesktopCompanion\settings.json`. The app collects
 and transmits **no data**. Run `python desktop_companion.py --selftest` to
@@ -54,25 +60,40 @@ The original pets are still here as `desktop_pet.py` (inflatable robot) and
 
 ---
 
-## Step 1 — Create your Telegram bot
+### Easiest way — the setup wizard
+
+```
+pip install -r requirements.txt
+python monitor_bot.py --setup      # (or: python setup_wizard.py)
+```
+
+The wizard walks you through creating a bot with @BotFather, checks your
+token actually works, **auto-detects your chat id** (you just send your bot a
+message), writes `config.py` for you, and can set the bot to start with
+Windows. Then run `python monitor_bot.py` and send `/help` in Telegram.
+
+Prefer to do it by hand? The manual steps are below.
+
+### Manual setup
+
+**Step 1 — Create your Telegram bot**
 
 1. In Telegram, open a chat with **@BotFather**.
 2. Send `/newbot`, pick a name and a username (must end in `bot`).
 3. BotFather replies with a **token** like `123456:ABC-DEF...`. Copy it.
 
-## Step 2 — Install the dependencies
-
-Open Command Prompt in this folder and run:
+**Step 2 — Install the dependencies**
 
 ```
 pip install -r requirements.txt
 ```
 
-## Step 3 — Add your token
+**Step 3 — Add your token**
 
-Open `config.py` and paste your token into `BOT_TOKEN`. Save.
+Open `config.py` and paste your token into `BOT_TOKEN`. Save. (Or set the
+`MONITORBOT_TOKEN` environment variable instead.)
 
-## Step 4 — Find your chat id (one time)
+**Step 4 — Find your chat id (one time)**
 
 1. Run the bot:  `python monitor_bot.py`
 2. In Telegram, open **your** bot and send `/myid`.

@@ -34,6 +34,7 @@ import math
 import os
 import random
 import sys
+import time
 
 # Pillow is required; the rest of the GUI stack is stdlib.
 from PIL import Image, ImageDraw, ImageFilter
@@ -73,6 +74,12 @@ DEFAULTS = {
     "pomodoro_break": 5,         # minutes of break
     "start_with_windows": False,
     "clickthrough_hint_shown": False,
+    # --- pet care / mini-game state ---
+    "care_enabled": True,        # hunger/happiness that you tend to
+    "hunger": 30.0,              # 0 = full, 100 = starving
+    "happiness": 80.0,           # 0 = sad, 100 = delighted
+    "stats_time": None,          # epoch of last stats update (for decay)
+    "high_score": 0,             # best Catch-the-Treats score
 }
 
 
@@ -108,13 +115,18 @@ def save_settings(data):
 # A shared coordinate helper maps a 100x133 design space onto the frame with
 # the breathing squash applied towards the feet, so volume looks constant.
 
-CHARACTERS = ("robot", "cat", "ghost", "slime", "duck")
+CHARACTERS = ("robot", "cat", "ghost", "slime", "duck",
+              "fox", "penguin", "dino", "bunny")
 CHARACTER_LABELS = {
     "robot": "Chip the Robot",
     "cat": "Momo the Cat",
     "ghost": "Boo the Ghost",
     "slime": "Gloop the Slime",
     "duck": "Puddles the Duck",
+    "fox": "Rusty the Fox",
+    "penguin": "Pip the Penguin",
+    "dino": "Rex the Dino",
+    "bunny": "Clover the Bunny",
 }
 
 
@@ -270,9 +282,112 @@ def draw_duck(box, squash, blink):
     return img
 
 
+def draw_fox(box, squash, blink):
+    W, H = box
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    P = _mapper(W, H, squash)
+    fur, outline, white, dark = (235, 130, 50), (150, 70, 20), \
+        (250, 245, 240), (60, 40, 30)
+    # bushy tail with white tip
+    _capsule(d, P(78, 120), P(96, 90), int(0.1 * W), fur)
+    d.ellipse([*P(90, 84), *P(100, 98)], fill=white)
+    # body
+    d.ellipse([*P(22, 72), *P(78, 128)], fill=fur, outline=outline,
+              width=max(1, int(0.012 * W)))
+    d.ellipse([*P(36, 96), *P(64, 128)], fill=white)        # belly
+    # head
+    d.ellipse([*P(28, 26), *P(72, 70)], fill=fur, outline=outline,
+              width=max(1, int(0.012 * W)))
+    # ears
+    d.polygon([P(30, 36), P(24, 8), P(46, 28)], fill=fur, outline=outline)
+    d.polygon([P(70, 36), P(76, 8), P(54, 28)], fill=fur, outline=outline)
+    d.polygon([P(32, 30), P(30, 16), P(40, 27)], fill=dark)
+    d.polygon([P(68, 30), P(70, 16), P(60, 27)], fill=dark)
+    # white snout
+    d.polygon([P(40, 52), P(60, 52), P(50, 70)], fill=white)
+    _eyes(d, P, 41, 59, 46, 4.6, blink, colour=dark)
+    d.polygon([P(47, 62), P(53, 62), P(50, 67)], fill=dark)  # nose
+    return img
+
+
+def draw_penguin(box, squash, blink):
+    W, H = box
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    P = _mapper(W, H, squash)
+    body, belly, beak = (40, 44, 58), (245, 246, 250), (250, 160, 40)
+    # feet
+    d.ellipse([*P(34, 122), *P(48, 130)], fill=beak)
+    d.ellipse([*P(52, 122), *P(66, 130)], fill=beak)
+    # body
+    d.ellipse([*P(22, 30), *P(78, 126)], fill=body)
+    d.ellipse([*P(32, 46), *P(68, 122)], fill=belly)        # white front
+    # flippers
+    _capsule(d, P(24, 70), P(16, 100), int(0.07 * W), body)
+    _capsule(d, P(76, 70), P(84, 100), int(0.07 * W), body)
+    # face area
+    d.ellipse([*P(34, 36), *P(66, 64)], fill=belly)
+    d.polygon([P(46, 54), P(54, 54), P(50, 64)], fill=beak)  # beak
+    _eyes(d, P, 43, 57, 48, 4.4, blink)
+    return img
+
+
+def draw_dino(box, squash, blink):
+    W, H = box
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    P = _mapper(W, H, squash)
+    body, outline, spike = (120, 200, 120), (60, 140, 70), (90, 170, 100)
+    # tail
+    d.polygon([P(72, 120), P(96, 110), P(74, 128)], fill=body, outline=outline)
+    # legs
+    _capsule(d, P(40, 116), P(39, 130), int(0.12 * W), body)
+    _capsule(d, P(60, 116), P(61, 130), int(0.12 * W), body)
+    # body
+    d.ellipse([*P(26, 58), *P(74, 126)], fill=body, outline=outline,
+              width=max(1, int(0.012 * W)))
+    # back spikes
+    for sx in (44, 52, 60, 68):
+        d.polygon([P(sx - 5, 60), P(sx + 5, 60), P(sx, 46)], fill=spike)
+    # head
+    d.ellipse([*P(34, 20), *P(72, 56)], fill=body, outline=outline,
+              width=max(1, int(0.012 * W)))
+    _eyes(d, P, 46, 60, 34, 4.4, blink)
+    d.arc([*P(44, 40), *P(62, 50)], 0, 180, fill=outline,
+          width=max(1, int(0.01 * W)))
+    return img
+
+
+def draw_bunny(box, squash, blink):
+    W, H = box
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    P = _mapper(W, H, squash)
+    fur, outline, inner, nose = (238, 238, 244), (180, 180, 196), \
+        (255, 190, 200), (230, 130, 150)
+    # ears
+    d.ellipse([*P(36, 2), *P(48, 48)], fill=fur, outline=outline,
+              width=max(1, int(0.01 * W)))
+    d.ellipse([*P(52, 2), *P(64, 48)], fill=fur, outline=outline,
+              width=max(1, int(0.01 * W)))
+    d.ellipse([*P(39, 8), *P(45, 42)], fill=inner)
+    d.ellipse([*P(55, 8), *P(61, 42)], fill=inner)
+    # body
+    d.ellipse([*P(24, 74), *P(76, 128)], fill=fur, outline=outline,
+              width=max(1, int(0.012 * W)))
+    # head
+    d.ellipse([*P(30, 42), *P(70, 82)], fill=fur, outline=outline,
+              width=max(1, int(0.012 * W)))
+    _eyes(d, P, 42, 58, 58, 4.8, blink, colour=(70, 60, 70))
+    d.polygon([P(47, 64), P(53, 64), P(50, 69)], fill=nose)
+    return img
+
+
 DRAWERS = {
     "robot": draw_robot, "cat": draw_cat, "ghost": draw_ghost,
-    "slime": draw_slime, "duck": draw_duck,
+    "slime": draw_slime, "duck": draw_duck, "fox": draw_fox,
+    "penguin": draw_penguin, "dino": draw_dino, "bunny": draw_bunny,
 }
 
 
@@ -293,6 +408,11 @@ BREAK_LINES = [
 ]
 POMODORO_START = ["Focus time! Let's go.", "25 minutes. Heads down!"]
 POMODORO_BREAK = ["Break time! Well earned.", "Pause. Breathe. Reset."]
+HUNGRY_LINES = ["I'm getting hungry...", "Snack time? *tummy rumble*",
+                "Feed me? Pretty please!", "Could go for a treat..."]
+FED_LINES = ["Yum, thank you!", "So tasty!", "Mmm, my favourite!", "*happy munch*"]
+PLAY_LINES = ["Yay, that was fun!", "Let's play again soon!", "Wheee!",
+              "You're the best!"]
 
 
 # ============================================================================
@@ -389,6 +509,12 @@ def run_app(settings):
                 if self.s["break_reminders"] else None
             self.pomo_state = None      # None | "focus" | "break"
             self.pomo_end = 0
+
+            # pet-care stats: catch up decay for time since last run
+            self._apply_offline_decay()
+            self.next_stat = self._frames(15)        # recompute every 15s
+            self.next_hungry = self._frames(60)      # earliest hungry nag
+            self.game = None                         # open mini-game window
 
             self._build_menu()
             self._apply_startup(self.s["start_with_windows"], announce=False)
@@ -512,6 +638,11 @@ def run_app(settings):
             m.add_cascade(label="Choose pet", menu=char)
             m.add_command(label="Say something", command=self.say_random)
             m.add_separator()
+            if self.s["care_enabled"]:
+                m.add_command(label="Feed", command=self.feed)
+                m.add_command(label="Play catch game", command=self.play_catch)
+                m.add_command(label="How are you?", command=self.show_stats)
+                m.add_separator()
             self.pomo_label = tk.StringVar(value="Start focus timer")
             m.add_command(label="Start focus timer (Pomodoro)",
                           command=self.toggle_pomodoro)
@@ -619,7 +750,80 @@ def run_app(settings):
                     self.say("Will start with Windows." if enabled
                              else "Won't auto-start anymore.", 4)
 
+        # ---- pet care (feeding / happiness) ----
+        def _apply_offline_decay(self):
+            last = self.s.get("stats_time")
+            now = time.time()
+            if last:
+                self._decay((now - last) / 60.0)
+            self.s["stats_time"] = now
+            save_settings(self.s)
+
+        def _decay(self, minutes):
+            minutes = max(0.0, min(minutes, 60 * 24))   # cap a long sleep
+            self.s["hunger"] = min(100.0, self.s["hunger"] + minutes / 6.0)
+            target = 100.0 - self.s["hunger"]           # happy when well-fed
+            pull = min(1.0, minutes / 120.0)
+            self.s["happiness"] += (target - self.s["happiness"]) * pull
+            self.s["happiness"] = max(0.0, min(100.0, self.s["happiness"]))
+
+        def _save_stats(self):
+            self.s["stats_time"] = time.time()
+            save_settings(self.s)
+
+        def mood(self):
+            h, hp = self.s["hunger"], self.s["happiness"]
+            if hp > 75 and h < 40:
+                return "delighted"
+            if h > 75:
+                return "very hungry"
+            if hp < 35:
+                return "a bit glum"
+            return "content"
+
+        def feed(self):
+            if not self.s["care_enabled"]:
+                return
+            self.s["hunger"] = max(0.0, self.s["hunger"] - 35.0)
+            self.s["happiness"] = min(100.0, self.s["happiness"] + 12.0)
+            self._save_stats()
+            self.bounce = 1.0
+            self.say(random.choice(FED_LINES), 4)
+
+        def play_catch(self):
+            if self.game is not None:
+                try:
+                    self.game.win.lift()
+                except Exception:
+                    self.game = None
+                return
+            self.game = MiniGame(self)
+
+        def on_game_over(self, score):
+            if self.game is None:
+                return               # already processed this round
+            self.game = None
+            if self.s["care_enabled"]:
+                self.s["happiness"] = min(100.0, self.s["happiness"]
+                                          + min(25.0, score * 2.0))
+                self.s["hunger"] = max(0.0, self.s["hunger"] - score * 1.0)
+                self._save_stats()
+            best = ""
+            if score > self.s["high_score"]:
+                self.s["high_score"] = score
+                save_settings(self.s)
+                best = " New best!"
+            self.bounce = 1.0
+            self.say(random.choice(PLAY_LINES) + f" ({score} caught){best}", 6)
+
+        def show_stats(self):
+            name = CHARACTER_LABELS[self.s["character"]]
+            self.say(f"{name} is feeling {self.mood()}.\n"
+                     f"Hunger {int(self.s['hunger'])}/100, "
+                     f"Happiness {int(self.s['happiness'])}/100.", 6)
+
         def quit(self):
+            self._save_stats()
             save_settings(self.s)
             self._hide_bubble()
             if self.tray is not None:
@@ -695,6 +899,15 @@ def run_app(settings):
                     self.pomo_end = self._frames(self.s["pomodoro_focus"] * 60)
                     self.say(random.choice(POMODORO_START), 6)
 
+            # pet care: decay stats, and occasionally ask to be fed
+            if self.s["care_enabled"] and self.tick >= self.next_stat:
+                self._decay(15.0 / 60.0)
+                self.next_stat = self._frames(15)
+                if self.s["hunger"] > 75 and self.tick >= self.next_hungry \
+                        and self.bubble is None and self.pomo_state is None:
+                    self.say(random.choice(HUNGRY_LINES), 6)
+                    self.next_hungry = self._frames(180)   # don't nag
+
             self.root.after(self.FRAME_MS, self.animate)
 
         def run(self):
@@ -755,6 +968,12 @@ def run_app(settings):
                        width=6).grid(row=row, column=1, sticky="w", **pad)
             row += 1
 
+            self.care_var = tk.BooleanVar(value=self.s["care_enabled"])
+            tk.Checkbutton(w, text="Pet care (feeding, mini-game, moods)",
+                           variable=self.care_var).grid(
+                row=row, column=0, columnspan=2, sticky="w", **pad)
+            row += 1
+
             self.startup_var = tk.BooleanVar(value=self.s["start_with_windows"])
             tk.Checkbutton(w, text="Start with Windows",
                            variable=self.startup_var).grid(
@@ -776,6 +995,7 @@ def run_app(settings):
             self.s["break_reminders"] = bool(self.break_var.get())
             self.s["break_every"] = int(self.breakmin_var.get())
             self.s["pomodoro_focus"] = int(self.focus_var.get())
+            self.s["care_enabled"] = bool(self.care_var.get())
             if new_size != self.s["size"]:
                 self.s["size"] = new_size
                 app.resize(new_size)
@@ -787,6 +1007,130 @@ def run_app(settings):
             save_settings(self.s)
             self.w.destroy()
             app.say("Settings saved!", 3)
+
+    class MiniGame:
+        """Catch-the-Treats: treats fall, click them before they hit the
+        ground. Catching treats feeds the pet and makes it happier."""
+        W, H = 380, 300
+        DURATION = 25            # seconds per round
+        TREAT_R = 18
+
+        def __init__(self, app):
+            self.app = app
+            self.score = 0
+            self.time_left = self.DURATION
+            self.treats = []     # list of [canvas_id, x, y, speed, kind]
+            self.running = True
+
+            w = tk.Toplevel(app.root)
+            w.title("Catch the Treats!")
+            w.resizable(False, False)
+            w.attributes("-topmost", True)
+            w.configure(bg="#eef3ff")
+            w.protocol("WM_DELETE_WINDOW", self.close)
+            self.win = w
+
+            self.hud = tk.Label(w, text="", bg="#eef3ff", fg="#333",
+                                font=("Segoe UI", 12, "bold"))
+            self.hud.pack(pady=(8, 2))
+            self.canvas = tk.Canvas(w, width=self.W, height=self.H,
+                                    bg="#dbe7ff", highlightthickness=0)
+            self.canvas.pack(padx=10, pady=(0, 10))
+            tk.Label(w, text="Click the treats before they fall!",
+                     bg="#eef3ff", fg="#667").pack(pady=(0, 8))
+            self.canvas.bind("<Button-1>", self.on_click)
+
+            self._centre_on_pet()
+            self._update_hud()
+            self.spawn_tick = 0
+            self.frame = 0
+            self._timer()
+            self._loop()
+
+        def _centre_on_pet(self):
+            try:
+                px = self.app.base_x + self.app.width // 2 - self.W // 2
+                py = self.app.base_y + self.app.height // 2 - self.H // 2
+                px = max(self.app.left, min(self.app.right - self.W - 20, px))
+                py = max(self.app.top, min(self.app.bottom - self.H - 60, py))
+                self.win.geometry(f"+{int(px)}+{int(py)}")
+            except Exception:
+                pass
+
+        def _update_hud(self):
+            self.hud.config(text=f"Score: {self.score}    "
+                                 f"Time: {self.time_left}s    "
+                                 f"Best: {self.app.s['high_score']}")
+
+        def _timer(self):
+            if not self.running:
+                return
+            self.time_left -= 1
+            self._update_hud()
+            if self.time_left <= 0:
+                self.finish()
+                return
+            self.win.after(1000, self._timer)
+
+        def spawn(self):
+            kinds = [("#ff8a5b", 1), ("#ffd23f", 1), ("#8ac926", 1),
+                     ("#e63946", -1)]   # red = bad treat, costs a point
+            colour, val = random.choice(kinds)
+            x = random.randint(self.TREAT_R, self.W - self.TREAT_R)
+            speed = random.uniform(3.5, 7.0)
+            r = self.TREAT_R
+            cid = self.canvas.create_oval(x - r, -r, x + r, r, fill=colour,
+                                          outline="")
+            self.treats.append([cid, x, -r, speed, val])
+
+        def on_click(self, e):
+            for t in list(self.treats):
+                cid, x, y, _, val = t
+                if (e.x - x) ** 2 + (e.y - y) ** 2 <= (self.TREAT_R + 4) ** 2:
+                    self.score = max(0, self.score + val)
+                    self.canvas.delete(cid)
+                    self.treats.remove(t)
+                    self._update_hud()
+                    break
+
+        def _loop(self):
+            if not self.running:
+                return
+            self.frame += 1
+            if self.frame % max(6, 16 - self.score // 3) == 0:
+                self.spawn()
+            for t in list(self.treats):
+                t[2] += t[3]
+                self.canvas.move(t[0], 0, t[3])
+                if t[2] - self.TREAT_R > self.H:
+                    self.canvas.delete(t[0])
+                    self.treats.remove(t)
+            self.win.after(30, self._loop)
+
+        def finish(self):
+            if not self.running:
+                return
+            self.running = False
+            try:
+                self.canvas.create_text(
+                    self.W // 2, self.H // 2, text=f"Time!\nYou caught {self.score}",
+                    font=("Segoe UI", 22, "bold"), fill="#2b3a67",
+                    justify="center")
+                self.win.after(1400, self._safe_destroy)
+            except Exception:
+                self._safe_destroy()
+            self.app.on_game_over(self.score)
+
+        def close(self):
+            self.running = False
+            self.app.on_game_over(self.score)
+            self._safe_destroy()
+
+        def _safe_destroy(self):
+            try:
+                self.win.destroy()
+            except Exception:
+                pass
 
     Companion().run()
 

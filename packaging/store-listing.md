@@ -17,8 +17,12 @@ focus timer** and gentle **"stand up and stretch" break reminders**, so it
 quietly helps you work in healthier, more focused bursts.
 
 FEATURES
-• Five characters to choose from — Chip the Robot, Momo the Cat, Boo the
-  Ghost, Gloop the Slime, and Puddles the Duck.
+• Nine characters to choose from — Chip the Robot, Momo the Cat, Boo the
+  Ghost, Gloop the Slime, Puddles the Duck, Rusty the Fox, Pip the Penguin,
+  Rex the Dino, and Clover the Bunny.
+• Feed your pet and keep it happy — it gets hungry over time and shows its mood.
+• Catch-the-Treats mini-game — catch falling treats to feed your pet and beat
+  your high score.
 • Drag your pet anywhere on screen — it remembers where you put it.
 • Friendly speech bubbles with encouraging little messages.
 • Built-in Pomodoro focus timer (work / break cycles you can customise).
@@ -40,5 +44,6 @@ Productivity  (secondary: Personalization)
 Everyone / 3+  (no ads, no user content, no data collection)
 
 ## What's new (v1.0.0)
-First release. Five characters, focus timer, break reminders, system tray,
-and start-with-Windows.
+First release. Nine characters, a feed-and-play pet care system with a
+Catch-the-Treats mini-game, a Pomodoro focus timer, break reminders, system
+tray, and start-with-Windows.
