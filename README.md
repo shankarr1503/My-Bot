@@ -15,13 +15,47 @@ A suite of Windows apps:
 3. **Anti-theft sentinel** (`antitheft_sentinel.py`) — alerts you on failed
    logins, armed from boot.
 
-> **Quick start — Desktop Companion:**
-> ```
-> pip install -r requirements.txt
-> python desktop_companion.py
-> ```
-> Right-click the pet (or its tray icon) for the menu. Double-click it to chat,
-> drag it anywhere. Pick a different pet with `python desktop_companion.py cat`.
+---
+
+## Install on your Windows laptop
+
+You have two ways to get Desktop Companion running. **Way 1 is the easiest.**
+
+### Way 1 — One-click installer (runs from the code)
+
+1. Install **Python 3.10+** from <https://www.python.org/downloads/> — on the
+   first screen of the installer, **tick "Add Python to PATH"**.
+2. Download this project (green **Code** button → **Download ZIP**) and unzip it.
+3. Double-click **`install.bat`**.
+
+That's it. It installs what's needed, puts a **Desktop Companion** shortcut on
+your desktop, and starts the pet. Start it again any time from that shortcut
+(or by double-clicking **`run_companion.bat`**).
+
+### Way 2 — Download the ready-made app (no Python needed)
+
+Every change is built into a real Windows `.exe` automatically:
+
+1. Go to the repo's **Actions** tab → the latest **"Build Windows apps"** run.
+2. Under **Artifacts**, download **`DesktopCompanion-windows.zip`**.
+3. Unzip it and double-click **`DesktopCompanion.exe`**.
+
+(When a version is tagged, the same files are attached to a **Release** for a
+permanent download link.)
+
+> The first time Windows SmartScreen may say "unknown publisher" because the
+> app isn't code-signed yet (signing is part of the Microsoft Store step).
+> Click **More info → Run anyway**. The Store build is signed by Microsoft and
+> won't show this.
+
+### For developers
+
+```
+pip install -r requirements.txt
+python desktop_companion.py          # or: python desktop_companion.py cat
+```
+Right-click the pet (or its tray icon) for the menu; double-click it to chat;
+drag it anywhere.
 
 ---
 

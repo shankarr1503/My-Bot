@@ -1,0 +1,78 @@
+name: Build Windows apps
+
+# Builds the two apps into real Windows executables on a Windows machine,
+# then uploads them as downloadable zips. No Python needed to run the result.
+#
+# When it runs:
+#   * every push to main
+#   * on every pull request (so you can download and test before merging)
+#   * on demand   (Actions tab -> this workflow -> "Run workflow")
+#   * on a version tag like v1.0.0  (also publishes a GitHub Release)
+#
+# Where to get the files:
+#   Open the run in the Actions tab -> "Artifacts" at the bottom:
+#     DesktopCompanion-windows.zip   <- the pet app
+#     MonitorBot-windows.zip         <- the Telegram bot
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]        # a tag like v1.0.0 also publishes a Release
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write       # needed to publish a Release on a tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Generate image assets (icons, tiles, splash)
+        run: python packaging/generate_assets.py
+
+      - name: Build Desktop Companion (the pet app)
+        run: pyinstaller --noconfirm --clean packaging/DesktopCompanion.spec
+
+      - name: Build Monitor Bot (the Telegram bot)
+        run: pyinstaller --noconfirm --clean packaging/MonitorBot.spec
+
+      - name: Package the apps into zips
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/DesktopCompanion -DestinationPath DesktopCompanion-windows.zip -Force
+          Compress-Archive -Path dist/MonitorBot      -DestinationPath MonitorBot-windows.zip -Force
+
+      - name: Upload Desktop Companion
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopCompanion-windows
+          path: DesktopCompanion-windows.zip
+
+      - name: Upload Monitor Bot
+        uses: actions/upload-artifact@v4
+        with:
+          name: MonitorBot-windows
+          path: MonitorBot-windows.zip
+
+      - name: Publish a Release (only on a version tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            DesktopCompanion-windows.zip
+            MonitorBot-windows.zip
