@@ -34,14 +34,22 @@ your desktop, and starts the pet. Start it again any time from that shortcut
 
 ### Way 2 — Download the ready-made app (no Python needed)
 
-Every change is built into a real Windows `.exe` automatically:
+Every change is built into a real Windows `.exe` automatically.
 
-1. Go to the repo's **Actions** tab → the latest **"Build Windows apps"** run.
-2. Under **Artifacts**, download **`DesktopCompanion-windows.zip`**.
-3. Unzip it and double-click **`DesktopCompanion.exe`**.
+**Best: from a Release** (a stable, public download):
 
-(When a version is tagged, the same files are attached to a **Release** for a
-permanent download link.)
+1. Go to the repo's **Releases** page and open the latest version.
+2. Download **`DesktopCompanion-windows.zip`**, unzip it, and double-click
+   **`DesktopCompanion.exe`**.
+
+**Or from a build run** (needs you to be **signed in to GitHub** with read
+access to this repo):
+
+1. **Actions** tab → open a **"Build Windows apps"** run **on the `main`
+   branch** (pick a trusted, merged build — not a pull-request run, which can
+   contain unreviewed changes).
+2. Under **Artifacts**, download **`DesktopCompanion-windows`**, unzip it, and
+   double-click **`DesktopCompanion.exe`**.
 
 > The first time Windows SmartScreen may say "unknown publisher" because the
 > app isn't code-signed yet (signing is part of the Microsoft Store step).

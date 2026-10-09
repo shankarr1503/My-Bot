@@ -31,6 +31,20 @@ if errorlevel 1 (
 )
 for /f "delims=" %%v in ('python --version') do echo [OK] Found %%v
 
+REM --- 1b. Is it new enough? (needs 3.10+) --------------------------
+python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)"
+if errorlevel 1 (
+  echo.
+  echo [X] That Python is too old. Desktop Companion needs Python 3.10 or newer.
+  echo.
+  echo     Please install the latest Python from:
+  echo         https://www.python.org/downloads/
+  echo     (tick "Add Python to PATH"), then run this installer again.
+  echo.
+  pause
+  exit /b 1
+)
+
 REM --- 2. Install the things the app needs ---------------------------
 echo.
 echo Installing the app's requirements (this can take a minute)...
