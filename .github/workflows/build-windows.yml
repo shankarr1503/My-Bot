@@ -1,0 +1,103 @@
+name: Build Windows apps
+
+# Builds the two apps into real Windows executables on a Windows machine,
+# then uploads them as downloadable artifacts. No Python needed to run them.
+#
+# When it runs:
+#   * every push to main
+#   * on every pull request (so you can download and test before merging)
+#   * on demand   (Actions tab -> this workflow -> "Run workflow")
+#   * on a version tag like v1.0.0  (also publishes a GitHub Release)
+#
+# Where to get the files:
+#   Open a run in the Actions tab -> "Artifacts" at the bottom:
+#     DesktopCompanion-windows   <- the pet app (DesktopCompanion.exe inside)
+#     MonitorBot-windows         <- the Telegram bot
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]        # a v1.0.0-style tag also publishes a Release
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default: the build job only reads the repo. Only the
+# release job (below) is granted write access, and only for version tags.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # the build runs code; don't leave a token around
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Generate image assets (icons, tiles, splash)
+        run: python packaging/generate_assets.py
+
+      - name: Build Desktop Companion (the pet app)
+        run: pyinstaller --noconfirm --clean packaging/DesktopCompanion.spec
+
+      - name: Build Monitor Bot (the Telegram bot)
+        run: pyinstaller --noconfirm --clean packaging/MonitorBot.spec
+
+      # Upload the app folders directly. upload-artifact zips what you give it,
+      # so passing the folder (not a .zip) means one extraction to reach the exe.
+      - name: Upload Desktop Companion
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopCompanion-windows
+          path: dist/DesktopCompanion
+
+      - name: Upload Monitor Bot
+        uses: actions/upload-artifact@v4
+        with:
+          name: MonitorBot-windows
+          path: dist/MonitorBot
+
+  # Publishing is isolated in its own job: it alone gets write access, and it
+  # only runs for a pushed version tag (never a PR or a manual run).
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built Desktop Companion
+        uses: actions/download-artifact@v4
+        with:
+          name: DesktopCompanion-windows
+          path: DesktopCompanion
+
+      - name: Download built Monitor Bot
+        uses: actions/download-artifact@v4
+        with:
+          name: MonitorBot-windows
+          path: MonitorBot
+
+      - name: Zip the apps for the Release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path DesktopCompanion -DestinationPath DesktopCompanion-windows.zip -Force
+          Compress-Archive -Path MonitorBot      -DestinationPath MonitorBot-windows.zip -Force
+
+      - name: Publish the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            DesktopCompanion-windows.zip
+            MonitorBot-windows.zip
