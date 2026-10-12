@@ -20,6 +20,11 @@ on:
     tags: ["v*"]        # a v1.0.0-style tag also publishes a Release
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a Release at this tag (e.g. v1.0.0). Leave blank to only build."
+        required: false
+        default: ""
 
 # Least privilege by default: the build job only reads the repo. Only the
 # release job (below) is granted write access, and only for version tags.
@@ -58,12 +63,16 @@ jobs:
       # (iscc) is pre-installed on the GitHub windows-latest runner.
       - name: Build the installer (Inno Setup)
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
         run: |
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { throw "Inno Setup (ISCC) not found on the runner." }
+          # Derive the version from a pushed tag, or a manual release_tag, else 1.0.0.
           $ver = "1.0.0"
           if ($env:GITHUB_REF -like "refs/tags/v*") { $ver = $env:GITHUB_REF.Substring(11) }
+          elseif ($env:RELEASE_TAG -like "v*") { $ver = $env:RELEASE_TAG.Substring(1) }
           & $iscc "/DMyAppVersion=$ver" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)." }
 
@@ -89,11 +98,15 @@ jobs:
           name: MonitorBot-windows
           path: dist/MonitorBot
 
-  # Publishing is isolated in its own job: it alone gets write access, and it
-  # only runs for a pushed version tag (never a PR or a manual run).
+  # Publishing is isolated in its own job: it alone gets write access. It runs
+  # for a pushed version tag, or a maintainer-triggered "Run workflow" with a
+  # release_tag input (only users with write access can dispatch a workflow).
+  # A plain PR or build-only run never publishes.
   release:
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.release_tag, 'v'))
     runs-on: windows-latest
     permissions:
       contents: write
@@ -125,6 +138,11 @@ jobs:
       - name: Publish the Release
         uses: softprops/action-gh-release@v2
         with:
+          # On a tag push this is the ref; on a manual run it's the input, and
+          # the tag is created at this commit if it doesn't exist yet.
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ github.event.inputs.release_tag || github.ref_name }}
           body: |
             ## Install Desktop Companion
 
