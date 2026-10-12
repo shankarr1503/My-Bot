@@ -15,13 +15,55 @@ A suite of Windows apps:
 3. **Anti-theft sentinel** (`antitheft_sentinel.py`) — alerts you on failed
    logins, armed from boot.
 
-> **Quick start — Desktop Companion:**
-> ```
-> pip install -r requirements.txt
-> python desktop_companion.py
-> ```
-> Right-click the pet (or its tray icon) for the menu. Double-click it to chat,
-> drag it anywhere. Pick a different pet with `python desktop_companion.py cat`.
+---
+
+## Install on your Windows laptop
+
+You have two ways to get Desktop Companion running. **Way 1 is the easiest.**
+
+### Way 1 — One-click installer (runs from the code)
+
+1. Install **Python 3.10+** from <https://www.python.org/downloads/> — on the
+   first screen of the installer, **tick "Add Python to PATH"**.
+2. Download this project (green **Code** button → **Download ZIP**) and unzip it.
+3. Double-click **`install.bat`**.
+
+That's it. It installs what's needed, puts a **Desktop Companion** shortcut on
+your desktop, and starts the pet. Start it again any time from that shortcut
+(or by double-clicking **`run_companion.bat`**).
+
+### Way 2 — Download the installer (no Python, no code)
+
+This is the "download it from your browser and install it" option.
+
+1. Go to the repo's **Releases** page and open the latest version.
+2. Download **`DesktopCompanion-Setup.exe`**.
+3. Run it and click through the installer. It adds a Start-menu entry (and an
+   optional desktop shortcut) and installs **just for you — no admin needed**.
+
+> On first run Windows SmartScreen may say the publisher is unknown, because
+> the installer isn't code-signed yet (signing is the Microsoft Store step):
+> click **More info → Run anyway**. Chrome may also say the file "isn't
+> commonly downloaded" — choose **Keep**.
+
+Prefer no installer? The same Release has **`DesktopCompanion-windows.zip`** —
+unzip it and run `DesktopCompanion.exe`. (You can also get these from a
+**`main`-branch** run in the **Actions** tab, but that needs you to be signed
+in to GitHub with read access.)
+
+> The first time Windows SmartScreen may say "unknown publisher" because the
+> app isn't code-signed yet (signing is part of the Microsoft Store step).
+> Click **More info → Run anyway**. The Store build is signed by Microsoft and
+> won't show this.
+
+### For developers
+
+```
+pip install -r requirements.txt
+python desktop_companion.py          # or: python desktop_companion.py cat
+```
+Right-click the pet (or its tray icon) for the menu; double-click it to chat;
+drag it anywhere.
 
 ---
 
