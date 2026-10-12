@@ -32,24 +32,24 @@ That's it. It installs what's needed, puts a **Desktop Companion** shortcut on
 your desktop, and starts the pet. Start it again any time from that shortcut
 (or by double-clicking **`run_companion.bat`**).
 
-### Way 2 — Download the ready-made app (no Python needed)
+### Way 2 — Download the installer (no Python, no code)
 
-Every change is built into a real Windows `.exe` automatically.
-
-**Best: from a Release** (a stable, public download):
+This is the "download it from your browser and install it" option.
 
 1. Go to the repo's **Releases** page and open the latest version.
-2. Download **`DesktopCompanion-windows.zip`**, unzip it, and double-click
-   **`DesktopCompanion.exe`**.
+2. Download **`DesktopCompanion-Setup.exe`**.
+3. Run it and click through the installer. It adds a Start-menu entry (and an
+   optional desktop shortcut) and installs **just for you — no admin needed**.
 
-**Or from a build run** (needs you to be **signed in to GitHub** with read
-access to this repo):
+> On first run Windows SmartScreen may say the publisher is unknown, because
+> the installer isn't code-signed yet (signing is the Microsoft Store step):
+> click **More info → Run anyway**. Chrome may also say the file "isn't
+> commonly downloaded" — choose **Keep**.
 
-1. **Actions** tab → open a **"Build Windows apps"** run **on the `main`
-   branch** (pick a trusted, merged build — not a pull-request run, which can
-   contain unreviewed changes).
-2. Under **Artifacts**, download **`DesktopCompanion-windows`**, unzip it, and
-   double-click **`DesktopCompanion.exe`**.
+Prefer no installer? The same Release has **`DesktopCompanion-windows.zip`** —
+unzip it and run `DesktopCompanion.exe`. (You can also get these from a
+**`main`-branch** run in the **Actions** tab, but that needs you to be signed
+in to GitHub with read access.)
 
 > The first time Windows SmartScreen may say "unknown publisher" because the
 > app isn't code-signed yet (signing is part of the Microsoft Store step).

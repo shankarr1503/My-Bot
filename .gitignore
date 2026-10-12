@@ -24,3 +24,5 @@ packaging/assets/
 *.pfx
 *.cer
 *.spec.bak
+DesktopCompanion-Setup.exe
+*-Setup.exe
