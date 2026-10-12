@@ -138,15 +138,13 @@ def write_config(values):
 
 
 def bot_command():
-    """Return (argv, cwd) to launch the bot: the packaged MonitorBot.exe if it
-    sits next to us, otherwise this Python running monitor_bot.py."""
+    """Return (argv, cwd) to launch the bot.
+
+    In the packaged app the dashboard and the bot are the same executable, so
+    we just re-run ourselves with --bot. From source we run monitor_bot.py.
+    """
     if getattr(sys, "frozen", False):
-        exe = os.path.join(HERE, "MonitorBot.exe")
-        if os.path.exists(exe):
-            return [exe], HERE
-        exe = os.path.join(HERE, "MonitorBot", "MonitorBot.exe")
-        if os.path.exists(exe):
-            return [exe], os.path.dirname(exe)
+        return [sys.executable, "--bot"], HERE
     script = os.path.join(HERE, "monitor_bot.py")
     return [sys.executable, script], HERE
 

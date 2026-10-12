@@ -123,6 +123,11 @@ The **Dashboard** is a control panel with tabs:
 It writes everything to `config.py` for you — no file editing. Headless check:
 `python bot_dashboard.py --selftest`.
 
+**No Python?** Download **`MonitorBotDashboard-Setup.exe`** from the
+[Releases](https://github.com/shankarr1503/My-Bot/releases/latest) page and
+install it — the Dashboard and the bot ship together as one app (the Start
+button runs the bot). Per-user install, no admin needed.
+
 ### Setup wizard (console)
 
 ```

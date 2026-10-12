@@ -56,12 +56,14 @@ jobs:
       - name: Build Desktop Companion (the pet app)
         run: pyinstaller --noconfirm --clean packaging/DesktopCompanion.spec
 
-      - name: Build Monitor Bot (the Telegram bot)
-        run: pyinstaller --noconfirm --clean packaging/MonitorBot.spec
+      # The Monitor Bot Dashboard: one windowed app that is the control panel
+      # AND the bot (it runs itself with --bot). Replaces the console-only build.
+      - name: Build Monitor Bot Dashboard (GUI + bot)
+        run: pyinstaller --noconfirm --clean packaging/MonitorBotDashboard.spec
 
-      # Wrap the Desktop Companion build in a one-click installer. Inno Setup
-      # (iscc) is pre-installed on the GitHub windows-latest runner.
-      - name: Build the installer (Inno Setup)
+      # Wrap each build in a one-click installer. Inno Setup (iscc) is
+      # pre-installed on the GitHub windows-latest runner.
+      - name: Build the installers (Inno Setup)
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.event.inputs.release_tag }}
@@ -74,14 +76,22 @@ jobs:
           if ($env:GITHUB_REF -like "refs/tags/v*") { $ver = $env:GITHUB_REF.Substring(11) }
           elseif ($env:RELEASE_TAG -like "v*") { $ver = $env:RELEASE_TAG.Substring(1) }
           & $iscc "/DMyAppVersion=$ver" packaging\installer.iss
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)." }
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup (companion) failed (exit $LASTEXITCODE)." }
+          & $iscc "/DMyAppVersion=$ver" packaging\installer_dashboard.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup (dashboard) failed (exit $LASTEXITCODE)." }
 
-      # The installer: one file to download and run. This is the main download.
-      - name: Upload the installer
+      # The installers: one file each to download and run. These are the main downloads.
+      - name: Upload the Desktop Companion installer
         uses: actions/upload-artifact@v4
         with:
           name: DesktopCompanion-Setup
           path: DesktopCompanion-Setup.exe
+
+      - name: Upload the Dashboard installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: MonitorBotDashboard-Setup
+          path: MonitorBotDashboard-Setup.exe
 
       # The raw app folders too, for anyone who prefers an unzip-and-run copy.
       # upload-artifact zips what you give it, so passing the folder (not a .zip)
@@ -92,11 +102,11 @@ jobs:
           name: DesktopCompanion-windows
           path: dist/DesktopCompanion
 
-      - name: Upload Monitor Bot (portable)
+      - name: Upload Monitor Bot Dashboard (portable)
         uses: actions/upload-artifact@v4
         with:
-          name: MonitorBot-windows
-          path: dist/MonitorBot
+          name: MonitorBotDashboard-windows
+          path: dist/MonitorBotDashboard
 
   # Publishing is isolated in its own job: it alone gets write access. It runs
   # for a pushed version tag, or a maintainer-triggered "Run workflow" with a
@@ -111,11 +121,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download the installer
+      - name: Download the Desktop Companion installer
         uses: actions/download-artifact@v4
         with:
           name: DesktopCompanion-Setup
-          path: setup
+          path: setup-companion
+
+      - name: Download the Dashboard installer
+        uses: actions/download-artifact@v4
+        with:
+          name: MonitorBotDashboard-Setup
+          path: setup-dashboard
 
       - name: Download built Desktop Companion
         uses: actions/download-artifact@v4
@@ -123,17 +139,17 @@ jobs:
           name: DesktopCompanion-windows
           path: DesktopCompanion
 
-      - name: Download built Monitor Bot
+      - name: Download built Monitor Bot Dashboard
         uses: actions/download-artifact@v4
         with:
-          name: MonitorBot-windows
-          path: MonitorBot
+          name: MonitorBotDashboard-windows
+          path: MonitorBotDashboard
 
       - name: Zip the portable apps for the Release
         shell: pwsh
         run: |
-          Compress-Archive -Path DesktopCompanion -DestinationPath DesktopCompanion-windows.zip -Force
-          Compress-Archive -Path MonitorBot      -DestinationPath MonitorBot-windows.zip -Force
+          Compress-Archive -Path DesktopCompanion     -DestinationPath DesktopCompanion-windows.zip -Force
+          Compress-Archive -Path MonitorBotDashboard   -DestinationPath MonitorBotDashboard-windows.zip -Force
 
       - name: Publish the Release
         uses: softprops/action-gh-release@v2
@@ -144,20 +160,25 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: ${{ github.event.inputs.release_tag || github.ref_name }}
           body: |
-            ## Install Desktop Companion
+            ## Downloads
 
-            **Easiest:** download **`DesktopCompanion-Setup.exe`** below, run it,
-            and click through the installer. It adds a Start-menu entry (and an
-            optional desktop shortcut) and installs just for you — no admin needed.
+            **Desktop Companion** (the friendly desktop pet):
+            download **`DesktopCompanion-Setup.exe`**, run it, click through the
+            installer. Per-user, no admin needed.
 
-            Windows SmartScreen may warn that the publisher is unknown (the app
-            isn't code-signed yet): click **More info → Run anyway**.
+            **Monitor Bot Dashboard** (control your laptop from Telegram):
+            download **`MonitorBotDashboard-Setup.exe`**, install it, open the
+            Dashboard, paste your bot token on the Connect tab, link your account,
+            and press Start. Per-user, no admin needed.
 
-            Prefer no installer? Grab **`DesktopCompanion-windows.zip`**, unzip it,
-            and run `DesktopCompanion.exe`.
+            Windows SmartScreen may warn that the publisher is unknown (these apps
+            aren't code-signed yet): click **More info → Run anyway**. Chrome may
+            say the file "isn't commonly downloaded" — choose **Keep**.
 
-            `MonitorBot-windows.zip` is the optional Telegram bot — see the README.
+            Prefer no installer? The matching `*-windows.zip` files are portable:
+            unzip and run the `.exe` inside.
           files: |
-            setup/DesktopCompanion-Setup.exe
+            setup-companion/DesktopCompanion-Setup.exe
+            setup-dashboard/MonitorBotDashboard-Setup.exe
             DesktopCompanion-windows.zip
-            MonitorBot-windows.zip
+            MonitorBotDashboard-windows.zip
