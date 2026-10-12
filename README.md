@@ -103,7 +103,27 @@ The original pets are still here as `desktop_pet.py` (inflatable robot) and
 
 ---
 
-### Easiest way — the setup wizard
+### Easiest way — the Dashboard (no command line)
+
+```
+pip install -r requirements.txt
+python bot_dashboard.py          # or double-click run_dashboard.bat
+```
+
+The **Dashboard** is a control panel with tabs:
+
+| Tab | What it does |
+|---|---|
+| **Connect** | Paste your bot token, press **Test** to check it, press **Link my account** (it shows a one-time code; send that to your bot) to capture your chat id, then **Save** |
+| **Control** | **Start / Stop** the bot with a button, a running/stopped light, and a **live log** |
+| **Settings** | Every interval and toggle — watch folder, report timings, Defender check, webcam, login snapshot, location… |
+| **System** | Live CPU / RAM / disk / battery meters and uptime |
+| **Commands** | The full list of what you can send the bot in Telegram |
+
+It writes everything to `config.py` for you — no file editing. Headless check:
+`python bot_dashboard.py --selftest`.
+
+### Setup wizard (console)
 
 ```
 pip install -r requirements.txt
