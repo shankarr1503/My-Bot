@@ -39,7 +39,7 @@ if errorlevel 1 (
   echo.
   echo     Please install the latest Python from:
   echo         https://www.python.org/downloads/
-  echo     (tick "Add Python to PATH"), then run this installer again.
+  echo     ^(tick "Add Python to PATH"^), then run this installer again.
   echo.
   pause
   exit /b 1
