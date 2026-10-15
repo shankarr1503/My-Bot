@@ -61,9 +61,11 @@ in to GitHub with read access.)
 ```
 pip install -r requirements.txt
 python desktop_companion.py          # or: python desktop_companion.py cat
+python desktop_companion.py mypet.png   # use your own image as the pet
 ```
 Right-click the pet (or its tray icon) for the menu; double-click it to chat;
-drag it anywhere.
+drag it anywhere. To use your own image, pick **Choose pet → Use my own
+image...** (or **Upload image...** in Settings).
 
 ---
 
@@ -72,6 +74,7 @@ drag it anywhere.
 | | |
 |---|---|
 | **9 characters** | Robot, Cat, Ghost, Slime, Duck, Fox, Penguin, Dino, Bunny — each with a name |
+| **Your own image** | Upload any image (a PNG with a transparent background looks best) and it becomes your pet — it breathes and floats like the rest |
 | **System tray** | Show / hide / settings / quit, even when the pet is hidden |
 | **Settings window** | Pick pet, size, toggle features, timer lengths, start-with-Windows |
 | **Drag & remember** | Move the pet anywhere; its spot is saved between runs |

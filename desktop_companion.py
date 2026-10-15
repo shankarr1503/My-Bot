@@ -62,7 +62,8 @@ def config_dir():
 SETTINGS_PATH = os.path.join(config_dir(), "settings.json")
 
 DEFAULTS = {
-    "character": "robot",        # robot | cat | ghost | slime | duck
+    "character": "robot",        # robot | cat | ... | duck | custom
+    "custom_image": "",          # path to your own image, when character="custom"
     "size": 150,                 # pet box width in logical px (height scales)
     "x": None,                   # last position; None = auto top-right
     "y": None,
@@ -123,9 +124,44 @@ def load_settings():
                     data[key] = _coerce(DEFAULTS[key], value)
                 except ValueError:
                     pass                    # bad value -> keep the default
-    if data["character"] not in CHARACTERS:
+    if data["character"] == "custom":
+        # only keep the custom pet if its image is still there
+        if not (data.get("custom_image") and os.path.exists(data["custom_image"])):
+            data["character"] = DEFAULTS["character"]
+    elif data["character"] not in CHARACTERS:
         data["character"] = DEFAULTS["character"]
     return data
+
+
+# ============================================================================
+#  Custom pet from an uploaded image
+# ============================================================================
+
+def load_custom_image(path):
+    """Open an image as RGBA, or None if it can't be read."""
+    try:
+        return Image.open(path).convert("RGBA")
+    except Exception:
+        return None
+
+
+def custom_frames(src, width, height, breath_frames, breath_depth):
+    """Breathing frames from a user image: fit it into the pet box, then
+    squash vertically each frame (keeping volume by widening), feet on the
+    ground. Transparency is preserved; a cutout PNG looks best."""
+    base = src.copy()
+    base.thumbnail((width, height), Image.LANCZOS)
+    frames = []
+    for i in range(breath_frames):
+        squash = 1.0 - breath_depth * (
+            1 - math.cos(2 * math.pi * i / breath_frames)) / 2
+        w = max(1, int(base.width / math.sqrt(squash)))
+        h = max(1, int(base.height * squash))
+        sc = base.resize((w, h), Image.LANCZOS)
+        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        canvas.alpha_composite(sc, ((width - w) // 2, height - h))
+        frames.append(canvas)
+    return frames
 
 
 def save_settings(data):
@@ -160,6 +196,7 @@ CHARACTER_LABELS = {
     "penguin": "Pip the Penguin",
     "dino": "Rex the Dino",
     "bunny": "Clover the Bunny",
+    "custom": "My own image",
 }
 
 
@@ -562,19 +599,33 @@ def run_app(settings):
 
         # ---- frames ----
         def _build_frames(self):
-            drawer = DRAWERS.get(self.s["character"], draw_robot)
             rim = (198, 200, 210)
             W, H = self.width * SS, self.height * SS
             self.frames_open, self.frames_blink = [], []
-            for i in range(self.BREATH_FRAMES):
-                sq = 1.0 - self.BREATH_DEPTH * (
-                    1 - math.cos(2 * math.pi * i / self.BREATH_FRAMES)) / 2
-                fo = drawer((W, H), sq, 0.0).resize(
-                    (self.width, self.height), Image.LANCZOS)
-                fb = drawer((W, H), sq, 1.0).resize(
-                    (self.width, self.height), Image.LANCZOS)
-                self.frames_open.append(key_matte(fo, TRANSPARENT, rim))
-                self.frames_blink.append(key_matte(fb, TRANSPARENT, rim))
+
+            custom = None
+            if self.s["character"] == "custom" and self.s.get("custom_image"):
+                custom = load_custom_image(self.s["custom_image"])
+
+            if custom is not None:
+                # a user image: breathe + float, no blink (a photo can't blink)
+                for f in custom_frames(custom, self.width, self.height,
+                                       self.BREATH_FRAMES, self.BREATH_DEPTH):
+                    m = key_matte(f, TRANSPARENT, rim)
+                    self.frames_open.append(m)
+                    self.frames_blink.append(m)
+            else:
+                drawer = DRAWERS.get(self.s["character"], draw_robot)
+                for i in range(self.BREATH_FRAMES):
+                    sq = 1.0 - self.BREATH_DEPTH * (
+                        1 - math.cos(2 * math.pi * i / self.BREATH_FRAMES)) / 2
+                    fo = drawer((W, H), sq, 0.0).resize(
+                        (self.width, self.height), Image.LANCZOS)
+                    fb = drawer((W, H), sq, 1.0).resize(
+                        (self.width, self.height), Image.LANCZOS)
+                    self.frames_open.append(key_matte(fo, TRANSPARENT, rim))
+                    self.frames_blink.append(key_matte(fb, TRANSPARENT, rim))
+
             from PIL import ImageTk as _Tk
             self.photos = [_Tk.PhotoImage(f) for f in self.frames_open]
             self.photos_blink = [_Tk.PhotoImage(f) for f in self.frames_blink]
@@ -669,6 +720,11 @@ def run_app(settings):
                     label=("* " if key == self.s["character"] else "   ")
                     + CHARACTER_LABELS[key],
                     command=lambda k=key: self.set_character(k))
+            char.add_separator()
+            char.add_command(
+                label=("* " if self.s["character"] == "custom" else "   ")
+                + "Use my own image...",
+                command=self.choose_custom_image)
             m.add_cascade(label="Choose pet", menu=char)
             m.add_command(label="Say something", command=self.say_random)
             m.add_separator()
@@ -739,14 +795,55 @@ def run_app(settings):
             save_settings(self.s)
             self._build_frames()
             self._build_menu()
-            if self.tray is not None:
-                drawer = DRAWERS.get(key, draw_robot)
-                try:
-                    self.tray.icon = drawer((64 * SS, 85 * SS), 1.0, 0.0).resize(
-                        (64, 64), Image.LANCZOS)
-                except Exception:
-                    pass
+            self._update_tray_icon()
             self.say(f"I'm {CHARACTER_LABELS[key]} now!", 4)
+
+        def _update_tray_icon(self):
+            if self.tray is None:
+                return
+            try:
+                if self.s["character"] == "custom" and self.s.get("custom_image"):
+                    img = load_custom_image(self.s["custom_image"])
+                    icon = img.resize((64, 64), Image.LANCZOS) if img else None
+                else:
+                    drawer = DRAWERS.get(self.s["character"], draw_robot)
+                    icon = drawer((64 * SS, 85 * SS), 1.0, 0.0).resize(
+                        (64, 64), Image.LANCZOS)
+                if icon is not None:
+                    self.tray.icon = icon
+            except Exception:
+                pass
+
+        def choose_custom_image(self):
+            """Let the user pick any image and turn it into the pet."""
+            from tkinter import filedialog, messagebox
+            path = filedialog.askopenfilename(
+                title="Choose an image for your pet",
+                filetypes=[("Images", "*.png *.gif *.jpg *.jpeg *.bmp *.webp"),
+                           ("All files", "*.*")])
+            if not path:
+                return
+            if load_custom_image(path) is None:
+                messagebox.showerror(
+                    APP_NAME, "Couldn't read that image. A PNG with a "
+                    "transparent background works best.")
+                return
+            # copy it into the app's folder so it keeps working if the
+            # original is moved or deleted
+            ext = os.path.splitext(path)[1].lower() or ".png"
+            dest = os.path.join(config_dir(), "custom_pet" + ext)
+            try:
+                import shutil
+                shutil.copyfile(path, dest)
+            except Exception:
+                dest = path
+            self.s["custom_image"] = dest
+            self.s["character"] = "custom"
+            save_settings(self.s)
+            self._build_frames()
+            self._build_menu()
+            self._update_tray_icon()
+            self.say("Ooh, a new look!", 4)
 
         def _pomo_menu_text(self):
             running = getattr(self, "pomo_state", None) is not None
@@ -995,10 +1092,13 @@ def run_app(settings):
             self.char_var = tk.StringVar(value=self.s["character"])
             om = tk.OptionMenu(w, self.char_var,
                                *[CHARACTER_LABELS[k] for k in CHARACTERS])
-            # map label<->key
+            # map label<->key (the built-in characters; "custom" is separate)
             self.label_to_key = {CHARACTER_LABELS[k]: k for k in CHARACTERS}
-            self.char_var.set(CHARACTER_LABELS[self.s["character"]])
+            self.char_var.set(CHARACTER_LABELS.get(self.s["character"],
+                                                   CHARACTER_LABELS["robot"]))
             om.grid(row=row, column=1, sticky="ew", **pad)
+            tk.Button(w, text="Upload image...",
+                      command=self._pick_image).grid(row=row, column=2, **pad)
             row += 1
 
             tk.Label(w, text="Size:").grid(row=row, column=0, sticky="w", **pad)
@@ -1059,17 +1159,26 @@ def run_app(settings):
             tk.Button(bar, text="Cancel", width=10,
                       command=w.destroy).pack(side="left", padx=6)
 
+        def _pick_image(self):
+            self.app.choose_custom_image()
+            # reflect the new pet in the dropdown label
+            self.char_var.set(CHARACTER_LABELS.get(
+                self.s["character"], CHARACTER_LABELS["robot"]))
+
         def save(self):
             from tkinter import messagebox
             app = self.app
             # Read and validate EVERYTHING before changing any setting, so a
             # typo in one box can't leave the settings half-applied.
             try:
-                new_char = self.label_to_key[self.char_var.get()]
+                # an unknown label means "My own image" (custom) is still
+                # selected - keep whatever character is already active
+                new_char = self.label_to_key.get(self.char_var.get(),
+                                                  self.s["character"])
                 new_size = int(self.size_var.get())
                 break_every = int(self.breakmin_var.get())
                 focus = int(self.focus_var.get())
-            except (tk.TclError, ValueError, KeyError):
+            except (tk.TclError, ValueError):
                 messagebox.showerror(
                     APP_NAME, "Please enter whole numbers in the minutes boxes.",
                     parent=self.w)
@@ -1090,7 +1199,7 @@ def run_app(settings):
             if new_size != self.s["size"]:
                 self.s["size"] = new_size
                 app.resize(new_size)
-            if new_char != self.s["character"]:
+            if new_char != self.s["character"] and new_char in CHARACTERS:
                 app.set_character(new_char)
             note = "Settings saved!"
             want_startup = bool(self.startup_var.get())
@@ -1319,11 +1428,18 @@ def selftest(outdir=None):
             name = f"{key}{'_blink' if blink else ''}.png"
             img.save(os.path.join(outdir, name))
             results.append(name)
+    # custom-image path: build breathing frames from a generated test image
+    test_img = Image.new("RGBA", (120, 160), (0, 0, 0, 0))
+    ImageDraw.Draw(test_img).ellipse([10, 10, 110, 150], fill=(200, 120, 255, 255))
+    cframes = custom_frames(test_img, 150, 200, 14, 0.04)
+    assert len(cframes) == 14 and cframes[0].size == (150, 200)
+    cframes[0].save(os.path.join(outdir, "custom.png"))
+    results.append("custom.png")
     # settings round-trip
     s = load_settings()
     save_settings(s)
     print(f"Rendered {len(results)} frames to {outdir}")
-    print("Characters OK:", ", ".join(DRAWERS))
+    print("Characters OK:", ", ".join(DRAWERS), "+ custom image")
     print("Settings file:", SETTINGS_PATH)
     return results
 
@@ -1333,10 +1449,14 @@ def main():
         selftest()
         return
     settings = load_settings()
-    # allow "python desktop_companion.py cat" to pick a character quickly
+    # allow "python desktop_companion.py cat" to pick a character quickly,
+    # or "python desktop_companion.py C:\path\to\image.png" for a custom pet
     for a in sys.argv[1:]:
         if a in CHARACTERS:
             settings["character"] = a
+        elif os.path.isfile(a) and load_custom_image(a) is not None:
+            settings["character"] = "custom"
+            settings["custom_image"] = a
     run_app(settings)
 
 
