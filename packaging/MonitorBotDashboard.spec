@@ -2,10 +2,11 @@
 # Build:  pyinstaller packaging/MonitorBotDashboard.spec
 # Output: dist/MonitorBotDashboard/MonitorBotDashboard.exe  (windowed)
 #
-# One executable: it opens the dashboard by default, and runs the bot when
-# started with --bot (which is how the dashboard's Start button launches it),
-# and the setup wizard with --setup. config.py is read at run time from beside
-# the exe; only the blank config.example.py template is bundled.
+# One executable: it opens the dashboard by default and runs the bot when
+# started with --bot (how the dashboard's Start button launches it). It is
+# windowed (no console), so --setup opens the dashboard - whose Connect tab is
+# the GUI setup - instead of the console wizard. config.py is read at run time
+# from beside the exe; only the blank config.example.py template is bundled.
 
 import os
 
