@@ -61,6 +61,25 @@ jobs:
       - name: Build Monitor Bot Dashboard (GUI + bot)
         run: pyinstaller --noconfirm --clean packaging/MonitorBotDashboard.spec
 
+      # Code-signing (OFF by default). To turn it on, set the repository
+      # variable SIGN_BINARIES to "true" and add the certificate secret
+      # SIGNING_PFX_BASE64 (and SIGNING_PFX_PASSWORD if the .pfx has one).
+      # See packaging/CODE-SIGNING.md for the full guide, including the drop-in
+      # replacement for an Azure Artifact Signing or EV cloud-HSM certificate.
+      # We sign the app .exe files here, BEFORE packaging, so the installed app
+      # is signed; the installers themselves are signed after Inno Setup below.
+      - name: Sign the app executables
+        if: vars.SIGN_BINARIES == 'true'
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+        run: >-
+          pwsh packaging/sign-windows.ps1
+          dist/DesktopCompanion/DesktopCompanion.exe
+          dist/MonitorBotDashboard/MonitorBotDashboard.exe
+
       # Wrap each build in a one-click installer. Inno Setup (iscc) is
       # pre-installed on the GitHub windows-latest runner.
       - name: Build the installers (Inno Setup)
@@ -79,6 +98,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup (companion) failed (exit $LASTEXITCODE)." }
           & $iscc "/DMyAppVersion=$ver" packaging\installer_dashboard.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup (dashboard) failed (exit $LASTEXITCODE)." }
+
+      # Sign the installers themselves. This is the signature Windows SmartScreen
+      # and Chrome check when the file is downloaded, so it is what removes the
+      # "unknown publisher" warning. OFF unless SIGN_BINARIES=true (see above).
+      - name: Sign the installers
+        if: vars.SIGN_BINARIES == 'true'
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+        run: >-
+          pwsh packaging/sign-windows.ps1
+          DesktopCompanion-Setup.exe
+          MonitorBotDashboard-Setup.exe
 
       # The installers: one file each to download and run. These are the main downloads.
       - name: Upload the Desktop Companion installer
@@ -171,9 +205,7 @@ jobs:
             Dashboard, paste your bot token on the Connect tab, link your account,
             and press Start. Per-user, no admin needed.
 
-            Windows SmartScreen may warn that the publisher is unknown (these apps
-            aren't code-signed yet): click **More info → Run anyway**. Chrome may
-            say the file "isn't commonly downloaded" — choose **Keep**.
+            ${{ vars.SIGN_BINARIES == 'true' && 'These apps are digitally signed by a verified publisher, so Windows should install them without a SmartScreen publisher warning.' || 'Windows SmartScreen may warn that the publisher is unknown, because these apps are not code-signed yet: click **More info -> Run anyway**. In Chrome, if it says the file is not commonly downloaded, choose **Keep**.' }}
 
             Prefer no installer? The matching `*-windows.zip` files are portable:
             unzip and run the `.exe` inside.

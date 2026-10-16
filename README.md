@@ -42,9 +42,9 @@ This is the "download it from your browser and install it" option.
    optional desktop shortcut) and installs **just for you — no admin needed**.
 
 > On first run Windows SmartScreen may say the publisher is unknown, because
-> the installer isn't code-signed yet (signing is the Microsoft Store step):
-> click **More info → Run anyway**. Chrome may also say the file "isn't
-> commonly downloaded" — choose **Keep**.
+> the installer isn't code-signed yet: click **More info → Run anyway**. Chrome
+> may also say the file "isn't commonly downloaded" — choose **Keep**. To remove
+> this warning, see [`packaging/CODE-SIGNING.md`](packaging/CODE-SIGNING.md).
 
 Prefer no installer? The same Release has **`DesktopCompanion-windows.zip`** —
 unzip it and run `DesktopCompanion.exe`. (You can also get these from a
@@ -484,6 +484,9 @@ python packaging/generate_assets.py       # draw icons, tiles, splash, hero
   description and keywords.
 - [`packaging/privacy-policy.md`](packaging/privacy-policy.md) — minimal
   privacy policy to host (the app collects no data).
+- [`packaging/CODE-SIGNING.md`](packaging/CODE-SIGNING.md) — how to get a
+  code-signing certificate and remove the SmartScreen "unknown publisher"
+  warning. The build is pre-wired; signing turns on when you add the secrets.
 
 The Monitor Bot is distributed separately as a download (it needs each user's
 own Telegram token) — see Part 2 of the submission guide.
