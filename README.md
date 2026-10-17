@@ -82,7 +82,7 @@ once on first use). Add as many as you like, then switch between them from the
 | | |
 |---|---|
 | **9 characters** | Robot, Cat, Ghost, Slime, Duck, Fox, Penguin, Dino, Bunny — each with a name |
-| **Your own pet gallery** | Add any images and they become your pets — breathing and floating like the rest. Keep a whole gallery and switch between them from the menu |
+| **Your own pet gallery** | Add any images and they become your pets — breathing and floating like the rest. Keep a whole gallery and switch between them from the menu. Once you add your own, the built-in cartoon characters are hidden (toggle "Show the built-in cartoon characters" in Settings to bring them back) |
 | **Automatic cut-out** | The background is removed automatically (an on-device AI model), so a normal photo turns into a clean cut-out pet — no rectangle, no editing. The model downloads once on first use, then works offline. Toggle it in Settings |
 | **System tray** | Show / hide / settings / quit, even when the pet is hidden |
 | **Settings window** | Pick pet, size, toggle features, timer lengths, start-with-Windows |

@@ -66,6 +66,7 @@ DEFAULTS = {
     "custom_image": "",          # path of the ACTIVE custom pet (character="custom")
     "custom_pets": [],           # your saved gallery: [{"name": str, "path": str}, ...]
     "cutout_pets": True,         # auto-remove the background when adding an image
+    "show_builtin_pets": False,  # also list the built-in cartoon characters
     "size": 150,                 # pet box width in logical px (height scales)
     "x": None,                   # last position; None = auto top-right
     "y": None,
@@ -157,6 +158,13 @@ def load_settings():
             data["character"] = DEFAULTS["character"]
     elif data["character"] not in CHARACTERS:
         data["character"] = DEFAULTS["character"]
+
+    # If the built-in characters are hidden and you have your own pets, don't
+    # start up showing a (now invisible) built-in - switch to a custom pet.
+    if (not data.get("show_builtin_pets", False) and pets
+            and data["character"] != "custom"):
+        data["character"] = "custom"
+        data["custom_image"] = pets[0]["path"]
     return data
 
 
@@ -888,18 +896,27 @@ def run_app(settings):
                     pass
                 self.bubble = None
 
+        def _show_builtins(self):
+            """Built-in cartoon pets are listed only if you haven't hidden them,
+            or you have no custom pets yet (so the app is never empty)."""
+            return (self.s.get("show_builtin_pets", False)
+                    or not self.s.get("custom_pets"))
+
         # ---- the tray / right-click menu ----
         def _build_menu(self):
             m = tk.Menu(self.root, tearoff=0)
             char = tk.Menu(m, tearoff=0)
-            for key in CHARACTERS:
-                char.add_command(
-                    label=("* " if key == self.s["character"] else "   ")
-                    + CHARACTER_LABELS[key],
-                    command=lambda k=key: self.set_character(k))
             pets = self.s.get("custom_pets", [])
+            show_builtins = self._show_builtins()
+            if show_builtins:
+                for key in CHARACTERS:
+                    char.add_command(
+                        label=("* " if key == self.s["character"] else "   ")
+                        + CHARACTER_LABELS[key],
+                        command=lambda k=key: self.set_character(k))
             if pets:
-                char.add_separator()
+                if show_builtins:
+                    char.add_separator()
                 active = self.s.get("custom_image")
                 for p in pets:
                     on = (self.s["character"] == "custom"
@@ -1364,8 +1381,10 @@ def run_app(settings):
 
             tk.Label(w, text="Pet:").grid(row=row, column=0, sticky="w", **pad)
             self.char_var = tk.StringVar(value=self.s["character"])
-            # Built-in characters, plus every custom pet in the gallery.
-            self.label_to_key = {CHARACTER_LABELS[k]: k for k in CHARACTERS}
+            # Built-in characters (only when shown), plus every custom pet.
+            show_builtins = app._show_builtins()
+            self.label_to_key = ({CHARACTER_LABELS[k]: k for k in CHARACTERS}
+                                 if show_builtins else {})
             self.label_to_custom = {}
             pet_labels = []
             for p in self.s.get("custom_pets", []):
@@ -1374,16 +1393,20 @@ def run_app(settings):
                 pet_labels.append(lbl)
             om = tk.OptionMenu(
                 w, self.char_var,
-                *([CHARACTER_LABELS[k] for k in CHARACTERS] + pet_labels))
+                *(list(self.label_to_key.keys()) + pet_labels))
             # Show whichever pet is currently active.
+            default_label = (CHARACTER_LABELS["robot"] if show_builtins
+                             else (pet_labels[0] if pet_labels else ""))
             if self.s["character"] == "custom":
                 cur = self.s.get("custom_image")
                 self.char_var.set(next(
                     (l for l, pa in self.label_to_custom.items() if pa == cur),
-                    CHARACTER_LABELS["robot"]))
-            else:
+                    default_label))
+            elif show_builtins:
                 self.char_var.set(CHARACTER_LABELS.get(
-                    self.s["character"], CHARACTER_LABELS["robot"]))
+                    self.s["character"], default_label))
+            else:
+                self.char_var.set(default_label)
             om.grid(row=row, column=1, sticky="ew", **pad)
             tk.Button(w, text="Add image(s)...",
                       command=self._pick_image).grid(row=row, column=2, **pad)
@@ -1437,6 +1460,13 @@ def run_app(settings):
             self.cutout_var = tk.BooleanVar(value=self.s.get("cutout_pets", True))
             tk.Checkbutton(w, text="Cut out background when adding an image",
                            variable=self.cutout_var).grid(
+                row=row, column=0, columnspan=2, sticky="w", **pad)
+            row += 1
+
+            self.builtins_var = tk.BooleanVar(
+                value=self.s.get("show_builtin_pets", False))
+            tk.Checkbutton(w, text="Show the built-in cartoon characters",
+                           variable=self.builtins_var).grid(
                 row=row, column=0, columnspan=2, sticky="w", **pad)
             row += 1
 
@@ -1499,6 +1529,7 @@ def run_app(settings):
             self.s["care_enabled"] = bool(self.care_var.get())
             self.s["sound"] = bool(self.sound_var.get())
             self.s["cutout_pets"] = bool(self.cutout_var.get())
+            self.s["show_builtin_pets"] = bool(self.builtins_var.get())
             if new_size != self.s["size"]:
                 self.s["size"] = new_size
                 app.resize(new_size)
@@ -1506,6 +1537,11 @@ def run_app(settings):
                 app.set_custom_pet(new_custom)
             elif new_char != self.s["character"] and new_char in CHARACTERS:
                 app.set_character(new_char)
+            # If the built-ins were just hidden while a built-in is still the
+            # active pet, switch to one of your own pets instead.
+            if (not self.s["show_builtin_pets"] and self.s["custom_pets"]
+                    and self.s["character"] != "custom"):
+                app.set_custom_pet(self.s["custom_pets"][0]["path"])
             note = "Settings saved!"
             want_startup = bool(self.startup_var.get())
             if want_startup != self.s["start_with_windows"]:
