@@ -63,7 +63,8 @@ SETTINGS_PATH = os.path.join(config_dir(), "settings.json")
 
 DEFAULTS = {
     "character": "robot",        # robot | cat | ... | duck | custom
-    "custom_image": "",          # path to your own image, when character="custom"
+    "custom_image": "",          # path of the ACTIVE custom pet (character="custom")
+    "custom_pets": [],           # your saved gallery: [{"name": str, "path": str}, ...]
     "size": 150,                 # pet box width in logical px (height scales)
     "x": None,                   # last position; None = auto top-right
     "y": None,
@@ -104,6 +105,10 @@ def _coerce(default, value):
         # stats_time - stats_time is an epoch float, so keep floats as-is
         if is_num or (default is None and value is None):
             return value if default is None else float(value)
+    elif isinstance(default, list):
+        # the custom-pet gallery; its entries are sanitised in load_settings
+        if isinstance(value, list):
+            return value
     elif isinstance(default, str):
         if isinstance(value, str):
             return value
@@ -124,9 +129,30 @@ def load_settings():
                     data[key] = _coerce(DEFAULTS[key], value)
                 except ValueError:
                     pass                    # bad value -> keep the default
+    # Sanitise the custom-pet gallery: keep only entries that still name a
+    # readable image file on disk, with no duplicate paths.
+    pets, seen = [], set()
+    for item in data.get("custom_pets", []):
+        if not isinstance(item, dict):
+            continue
+        name, path = item.get("name"), item.get("path")
+        if (isinstance(name, str) and isinstance(path, str)
+                and path not in seen and os.path.exists(path)):
+            pets.append({"name": name, "path": path})
+            seen.add(path)
+    # Migrate a pre-gallery single custom image into the gallery.
+    ci = data.get("custom_image")
+    if isinstance(ci, str) and ci and os.path.exists(ci) and ci not in seen:
+        pets.append({"name": _name_from_path(ci), "path": ci})
+        seen.add(ci)
+    data["custom_pets"] = pets
+
     if data["character"] == "custom":
-        # only keep the custom pet if its image is still there
-        if not (data.get("custom_image") and os.path.exists(data["custom_image"])):
+        # keep the custom pet only if we still have a usable image for it
+        ci = data.get("custom_image")
+        if not (isinstance(ci, str) and ci and os.path.exists(ci)):
+            data["custom_image"] = pets[0]["path"] if pets else ""
+        if not data["custom_image"]:
             data["character"] = DEFAULTS["character"]
     elif data["character"] not in CHARACTERS:
         data["character"] = DEFAULTS["character"]
@@ -143,6 +169,24 @@ def load_custom_image(path):
         return Image.open(path).convert("RGBA")
     except Exception:
         return None
+
+
+def _name_from_path(path):
+    """A friendly pet name guessed from a file name: iron-man.png -> Iron Man."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = stem.replace("_", " ").replace("-", " ").strip()
+    return (stem[:24].strip() or "My pet").title()
+
+
+def _unique_pet_name(name, pets):
+    """Make `name` unique among the gallery by adding ' (2)', ' (3)', ..."""
+    existing = {p.get("name") for p in pets}
+    if name not in existing:
+        return name
+    n = 2
+    while f"{name} ({n})" in existing:
+        n += 1
+    return f"{name} ({n})"
 
 
 def custom_frames(src, width, height, breath_frames, breath_depth):
@@ -720,11 +764,24 @@ def run_app(settings):
                     label=("* " if key == self.s["character"] else "   ")
                     + CHARACTER_LABELS[key],
                     command=lambda k=key: self.set_character(k))
+            pets = self.s.get("custom_pets", [])
+            if pets:
+                char.add_separator()
+                active = self.s.get("custom_image")
+                for p in pets:
+                    on = (self.s["character"] == "custom"
+                          and active == p["path"])
+                    char.add_command(
+                        label=("* " if on else "   ") + p["name"],
+                        command=lambda pa=p["path"]: self.set_custom_pet(pa))
             char.add_separator()
-            char.add_command(
-                label=("* " if self.s["character"] == "custom" else "   ")
-                + "Use my own image...",
-                command=self.choose_custom_image)
+            char.add_command(label="   Add image(s)...",
+                             command=self.choose_custom_image)
+            if self.s["character"] == "custom" and self.s.get("custom_image"):
+                char.add_command(
+                    label="   Remove this pet",
+                    command=lambda: self.remove_custom_pet(
+                        self.s["custom_image"]))
             m.add_cascade(label="Choose pet", menu=char)
             m.add_command(label="Say something", command=self.say_random)
             m.add_separator()
@@ -814,36 +871,100 @@ def run_app(settings):
             except Exception:
                 pass
 
-        def choose_custom_image(self):
-            """Let the user pick any image and turn it into the pet."""
-            from tkinter import filedialog, messagebox
-            path = filedialog.askopenfilename(
-                title="Choose an image for your pet",
-                filetypes=[("Images", "*.png *.gif *.jpg *.jpeg *.bmp *.webp"),
-                           ("All files", "*.*")])
-            if not path:
-                return
-            if load_custom_image(path) is None:
-                messagebox.showerror(
-                    APP_NAME, "Couldn't read that image. A PNG with a "
-                    "transparent background works best.")
-                return
-            # copy it into the app's folder so it keeps working if the
-            # original is moved or deleted
-            ext = os.path.splitext(path)[1].lower() or ".png"
-            dest = os.path.join(config_dir(), "custom_pet" + ext)
+        def _store_custom_image(self, path):
+            """Copy an image into the app's pet folder; return the new path
+            (or the original path if the copy fails)."""
+            import shutil
+            pets_dir = os.path.join(config_dir(), "custom_pets")
             try:
-                import shutil
+                os.makedirs(pets_dir, exist_ok=True)
+            except OSError:
+                return path
+            ext = os.path.splitext(path)[1].lower() or ".png"
+            stem = os.path.splitext(os.path.basename(path))[0] or "pet"
+            dest = os.path.join(pets_dir, stem + ext)
+            n = 1
+            while os.path.exists(dest):
+                dest = os.path.join(pets_dir, f"{stem}_{n}{ext}")
+                n += 1
+            try:
                 shutil.copyfile(path, dest)
             except Exception:
-                dest = path
-            self.s["custom_image"] = dest
+                return path
+            return dest
+
+        def choose_custom_image(self):
+            """Pick one or more images and add them to your pet gallery."""
+            from tkinter import filedialog, messagebox
+            paths = filedialog.askopenfilenames(
+                title="Choose image(s) for your pets",
+                filetypes=[("Images", "*.png *.gif *.jpg *.jpeg *.bmp *.webp"),
+                           ("All files", "*.*")])
+            if not paths:
+                return
+            added, bad, last = 0, 0, None
+            for path in paths:
+                if load_custom_image(path) is None:
+                    bad += 1
+                    continue
+                dest = self._store_custom_image(path)
+                name = _unique_pet_name(_name_from_path(path),
+                                        self.s["custom_pets"])
+                self.s["custom_pets"].append({"name": name, "path": dest})
+                last, added = dest, added + 1
+            if last is not None:
+                self.s["custom_image"] = last
+                self.s["character"] = "custom"
+            save_settings(self.s)
+            self._build_frames()
+            self._build_menu()
+            self._update_tray_icon()
+            if added == 1:
+                self.say("Ooh, a new look!", 4)
+            elif added > 1:
+                self.say(f"Added {added} new pets! Right-click to switch.", 5)
+            if bad:
+                messagebox.showerror(
+                    APP_NAME, f"Couldn't read {bad} image(s). A PNG with a "
+                    "transparent background works best.")
+
+        def set_custom_pet(self, path):
+            """Switch to one of the custom pets already in the gallery."""
+            if (self.s["character"] == "custom"
+                    and self.s.get("custom_image") == path):
+                return
+            self.s["custom_image"] = path
             self.s["character"] = "custom"
             save_settings(self.s)
             self._build_frames()
             self._build_menu()
             self._update_tray_icon()
-            self.say("Ooh, a new look!", 4)
+            name = next((p["name"] for p in self.s["custom_pets"]
+                         if p["path"] == path), None)
+            self.say(f"I'm {name} now!" if name else "Ooh, a new look!", 4)
+
+        def remove_custom_pet(self, path):
+            """Remove a custom pet from the gallery (and delete our copy)."""
+            self.s["custom_pets"] = [p for p in self.s["custom_pets"]
+                                     if p["path"] != path]
+            try:
+                pets_dir = os.path.join(config_dir(), "custom_pets")
+                if os.path.dirname(os.path.abspath(path)) == pets_dir:
+                    os.remove(path)
+            except OSError:
+                pass
+            if self.s.get("custom_image") == path:
+                remaining = self.s["custom_pets"]
+                if remaining:
+                    self.s["custom_image"] = remaining[0]["path"]
+                else:
+                    self.s["custom_image"] = ""
+                    self.s["character"] = DEFAULTS["character"]
+            save_settings(self.s)
+            self._build_frames()
+            self._build_menu()
+            self._update_tray_icon()
+            self.say("Okay, I removed that one.", 3)
 
         def _pomo_menu_text(self):
             running = getattr(self, "pomo_state", None) is not None
@@ -1090,14 +1211,28 @@ def run_app(settings):
 
             tk.Label(w, text="Pet:").grid(row=row, column=0, sticky="w", **pad)
             self.char_var = tk.StringVar(value=self.s["character"])
-            om = tk.OptionMenu(w, self.char_var,
-                               *[CHARACTER_LABELS[k] for k in CHARACTERS])
-            # map label<->key (the built-in characters; "custom" is separate)
+            # Built-in characters, plus every custom pet in the gallery.
             self.label_to_key = {CHARACTER_LABELS[k]: k for k in CHARACTERS}
-            self.char_var.set(CHARACTER_LABELS.get(self.s["character"],
-                                                   CHARACTER_LABELS["robot"]))
+            self.label_to_custom = {}
+            pet_labels = []
+            for p in self.s.get("custom_pets", []):
+                lbl = "[mine] " + p["name"]
+                self.label_to_custom[lbl] = p["path"]
+                pet_labels.append(lbl)
+            om = tk.OptionMenu(
+                w, self.char_var,
+                *([CHARACTER_LABELS[k] for k in CHARACTERS] + pet_labels))
+            # Show whichever pet is currently active.
+            if self.s["character"] == "custom":
+                cur = self.s.get("custom_image")
+                self.char_var.set(next(
+                    (l for l, pa in self.label_to_custom.items() if pa == cur),
+                    CHARACTER_LABELS["robot"]))
+            else:
+                self.char_var.set(CHARACTER_LABELS.get(
+                    self.s["character"], CHARACTER_LABELS["robot"]))
             om.grid(row=row, column=1, sticky="ew", **pad)
-            tk.Button(w, text="Upload image...",
+            tk.Button(w, text="Add image(s)...",
                       command=self._pick_image).grid(row=row, column=2, **pad)
             row += 1
 
@@ -1160,10 +1295,15 @@ def run_app(settings):
                       command=w.destroy).pack(side="left", padx=6)
 
         def _pick_image(self):
+            before = len(self.s.get("custom_pets", []))
             self.app.choose_custom_image()
-            # reflect the new pet in the dropdown label
-            self.char_var.set(CHARACTER_LABELS.get(
-                self.s["character"], CHARACTER_LABELS["robot"]))
+            # If pets were added, reopen Settings so the dropdown lists them.
+            if len(self.s.get("custom_pets", [])) != before:
+                try:
+                    self.w.destroy()
+                except Exception:
+                    pass
+                SettingsWindow(self.app)
 
         def save(self):
             from tkinter import messagebox
@@ -1171,10 +1311,13 @@ def run_app(settings):
             # Read and validate EVERYTHING before changing any setting, so a
             # typo in one box can't leave the settings half-applied.
             try:
-                # an unknown label means "My own image" (custom) is still
-                # selected - keep whatever character is already active
-                new_char = self.label_to_key.get(self.char_var.get(),
-                                                  self.s["character"])
+                chosen = self.char_var.get()
+                if chosen in self.label_to_key:
+                    new_char, new_custom = self.label_to_key[chosen], None
+                elif chosen in self.label_to_custom:
+                    new_char, new_custom = "custom", self.label_to_custom[chosen]
+                else:
+                    new_char, new_custom = self.s["character"], None
                 new_size = int(self.size_var.get())
                 break_every = int(self.breakmin_var.get())
                 focus = int(self.focus_var.get())
@@ -1199,7 +1342,9 @@ def run_app(settings):
             if new_size != self.s["size"]:
                 self.s["size"] = new_size
                 app.resize(new_size)
-            if new_char != self.s["character"] and new_char in CHARACTERS:
+            if new_char == "custom" and new_custom:
+                app.set_custom_pet(new_custom)
+            elif new_char != self.s["character"] and new_char in CHARACTERS:
                 app.set_character(new_char)
             note = "Settings saved!"
             want_startup = bool(self.startup_var.get())
@@ -1435,11 +1580,16 @@ def selftest(outdir=None):
     assert len(cframes) == 14 and cframes[0].size == (150, 200)
     cframes[0].save(os.path.join(outdir, "custom.png"))
     results.append("custom.png")
+    # custom-pet gallery helpers
+    assert _name_from_path("iron-man.png") == "Iron Man"
+    assert _name_from_path("/x/THOR_wall.jpg") == "Thor Wall"
+    assert _unique_pet_name("Hulk", [{"name": "Hulk"}]) == "Hulk (2)"
+    assert _unique_pet_name("Hulk", [{"name": "Thor"}]) == "Hulk"
     # settings round-trip
     s = load_settings()
     save_settings(s)
     print(f"Rendered {len(results)} frames to {outdir}")
-    print("Characters OK:", ", ".join(DRAWERS), "+ custom image")
+    print("Characters OK:", ", ".join(DRAWERS), "+ custom pet gallery")
     print("Settings file:", SETTINGS_PATH)
     return results
 
@@ -1455,6 +1605,11 @@ def main():
         if a in CHARACTERS:
             settings["character"] = a
         elif os.path.isfile(a) and load_custom_image(a) is not None:
+            if not any(p.get("path") == a for p in settings["custom_pets"]):
+                settings["custom_pets"].append(
+                    {"name": _unique_pet_name(_name_from_path(a),
+                                              settings["custom_pets"]),
+                     "path": a})
             settings["character"] = "custom"
             settings["custom_image"] = a
     run_app(settings)
