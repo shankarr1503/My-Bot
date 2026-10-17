@@ -66,9 +66,14 @@ python desktop_companion.py hulk.png thor.png    # add several at once
 ```
 Right-click the pet (or its tray icon) for the menu; double-click it to chat;
 drag it anywhere. To use your own images, pick **Choose pet → Add image(s)...**
-(or **Add image(s)...** in Settings). Add as many as you like, then switch
-between them from the **Choose pet** menu, or remove one with **Remove this
-pet**.
+(or **Add image(s)...** in Settings). The background is removed automatically so
+each photo becomes a clean cut-out pet (toggle in Settings; the model downloads
+once on first use). Add as many as you like, then switch between them from the
+**Choose pet** menu, or remove one with **Remove this pet**.
+
+> Running from source and want the automatic cut-out? Also install the extra
+> deps: `pip install -r requirements-companion.txt` (onnxruntime + numpy).
+> Without them, images are still added — just without background removal.
 
 ---
 
@@ -77,7 +82,8 @@ pet**.
 | | |
 |---|---|
 | **9 characters** | Robot, Cat, Ghost, Slime, Duck, Fox, Penguin, Dino, Bunny — each with a name |
-| **Your own pet gallery** | Add any images (a PNG with a transparent background looks best) and they become your pets — breathing and floating like the rest. Keep a whole gallery and switch between them from the menu |
+| **Your own pet gallery** | Add any images and they become your pets — breathing and floating like the rest. Keep a whole gallery and switch between them from the menu |
+| **Automatic cut-out** | The background is removed automatically (an on-device AI model), so a normal photo turns into a clean cut-out pet — no rectangle, no editing. The model downloads once on first use, then works offline. Toggle it in Settings |
 | **System tray** | Show / hide / settings / quit, even when the pet is hidden |
 | **Settings window** | Pick pet, size, toggle features, timer lengths, start-with-Windows |
 | **Drag & remember** | Move the pet anywhere; its spot is saved between runs |
