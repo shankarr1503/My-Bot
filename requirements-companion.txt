@@ -1,0 +1,8 @@
+# Extra dependencies for the Desktop Companion's automatic background removal
+# (turning an uploaded photo into a clean cut-out pet). Installed in the build
+# so PyInstaller can bundle them. The U2-Net model itself is downloaded once on
+# first use, not bundled, so the installer stays small.
+#
+# Running from source: pip install -r requirements.txt -r requirements-companion.txt
+onnxruntime>=1.17        # runs the U2-Net cut-out model on the CPU
+numpy>=1.24              # tensor pre/post-processing for the model

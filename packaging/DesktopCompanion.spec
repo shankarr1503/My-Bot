@@ -7,22 +7,33 @@
 # which the Store's static analysis dislikes.
 
 import os
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
+# Bundle onnxruntime (+ numpy) for the automatic background-removal feature.
+# The ~168 MB U2-Net model is NOT bundled; it is downloaded once on first use
+# and cached in %APPDATA%, so the installer stays small.
+bg_datas, bg_binaries, bg_hidden = [], [], []
+for _pkg in ("onnxruntime", "numpy"):
+    _d, _b, _h = collect_all(_pkg)
+    bg_datas += _d
+    bg_binaries += _b
+    bg_hidden += _h
+
 a = Analysis(
     [os.path.join(ROOT, "desktop_companion.py")],
     pathex=[ROOT],
-    binaries=[],
-    datas=[],
+    binaries=bg_binaries,
+    datas=bg_datas,
     hiddenimports=[
         "pystray._win32",       # tray backend PyInstaller may miss
         "PIL._tkinter_finder",
-    ],
+    ] + bg_hidden,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["cv2", "numpy", "telegram", "watchdog", "psutil"],
+    excludes=["cv2", "telegram", "watchdog", "psutil"],
     cipher=block_cipher,
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)

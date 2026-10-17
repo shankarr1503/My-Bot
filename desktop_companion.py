@@ -65,6 +65,7 @@ DEFAULTS = {
     "character": "robot",        # robot | cat | ... | duck | custom
     "custom_image": "",          # path of the ACTIVE custom pet (character="custom")
     "custom_pets": [],           # your saved gallery: [{"name": str, "path": str}, ...]
+    "cutout_pets": True,         # auto-remove the background when adding an image
     "size": 150,                 # pet box width in logical px (height scales)
     "x": None,                   # last position; None = auto top-right
     "y": None,
@@ -206,6 +207,138 @@ def custom_frames(src, width, height, breath_frames, breath_depth):
         canvas.alpha_composite(sc, ((width - w) // 2, height - h))
         frames.append(canvas)
     return frames
+
+
+# ============================================================================
+#  Automatic background removal - turn any photo into a clean cut-out pet
+# ============================================================================
+#
+# Uses the U2-Net saliency model through ONNX Runtime (the same model the
+# popular "rembg" tool uses), but driven directly so we only need onnxruntime
+# + numpy - no heavy extra packages. The ~168 MB model is downloaded once on
+# first use and cached beside the settings, then works offline. If onnxruntime
+# or the model is unavailable, we fall back to a plain-background heuristic, and
+# if even that fails the original image is used unchanged.
+
+BG_MODEL_URL = ("https://github.com/danielgatis/rembg/releases/download/"
+                "v0.0.0/u2net.onnx")
+BG_MEAN = (0.485, 0.456, 0.406)
+BG_STD = (0.229, 0.224, 0.225)
+_bg_session = None          # cached onnxruntime session (or False if it failed)
+
+
+def _bg_model_path():
+    return os.path.join(config_dir(), "u2net.onnx")
+
+
+def _bg_bundled_model():
+    """A model shipped beside the exe / in the PyInstaller bundle, if any."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "u2net.onnx")
+
+
+def ensure_bg_model(progress=None):
+    """Return a path to u2net.onnx, downloading it once if needed, else None."""
+    for p in (_bg_model_path(), _bg_bundled_model()):
+        if os.path.exists(p) and os.path.getsize(p) > 1_000_000:
+            return p
+    dest = _bg_model_path()
+    tmp = dest + ".part"
+    try:
+        import urllib.request
+        req = urllib.request.Request(BG_MODEL_URL,
+                                     headers={"User-Agent": "DesktopCompanion"})
+        with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                chunk = r.read(262144)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if progress and total:
+                    progress(done, total)
+        if os.path.getsize(tmp) < 1_000_000:
+            raise OSError("downloaded model too small")
+        os.replace(tmp, dest)
+        return dest
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return None
+
+
+def _get_bg_session():
+    global _bg_session
+    if _bg_session is not None:
+        return _bg_session or None
+    path = ensure_bg_model()
+    if not path:
+        _bg_session = False
+        return None
+    try:
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.log_severity_level = 3
+        _bg_session = ort.InferenceSession(
+            path, sess_options=so, providers=["CPUExecutionProvider"])
+    except Exception:
+        _bg_session = False
+    return _bg_session or None
+
+
+def _heuristic_cutout(img, tol=36):
+    """Pure-Pillow fallback: flood-fill the background in from the four corners
+    and make it transparent. Works for fairly plain backgrounds."""
+    try:
+        from PIL import ImageDraw
+        rgb = img.convert("RGB")
+        w, h = rgb.size
+        key = (0, 254, 1)       # a colour unlikely to appear in a real photo
+        work = rgb.copy()
+        for corner in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            ImageDraw.floodfill(work, corner, key, thresh=tol)
+        base = img.convert("RGBA")
+        bp, wp = base.load(), work.load()
+        for y in range(h):
+            for x in range(w):
+                if wp[x, y] == key:
+                    r, g, b, _ = bp[x, y]
+                    bp[x, y] = (r, g, b, 0)
+        return base
+    except Exception:
+        return img.convert("RGBA")
+
+
+def remove_background(img):
+    """Return an RGBA cut-out of the main subject with the background made
+    transparent. Never raises: falls back to a heuristic, then to the original."""
+    try:
+        sess = _get_bg_session()
+        if sess is not None:
+            import numpy as np
+            im = img.convert("RGB").resize((320, 320), Image.LANCZOS)
+            a = np.asarray(im).astype(np.float64)
+            a = a / max(a.max(), 1e-6)
+            t = np.zeros((320, 320, 3))
+            for c in range(3):
+                t[:, :, c] = (a[:, :, c] - BG_MEAN[c]) / BG_STD[c]
+            t = t.transpose(2, 0, 1)[None].astype(np.float32)
+            out = sess.run(None, {sess.get_inputs()[0].name: t})[0]
+            p = out[0, 0]
+            p = (p - p.min()) / (p.max() - p.min() + 1e-8)
+            mask = Image.fromarray((p * 255).astype("uint8"), "L").resize(
+                img.size, Image.LANCZOS)
+            rgba = img.convert("RGBA")
+            rgba.putalpha(mask)
+            return rgba
+    except Exception:
+        pass
+    return _heuristic_cutout(img)
 
 
 def save_settings(data):
@@ -871,47 +1004,66 @@ def run_app(settings):
             except Exception:
                 pass
 
-        def _store_custom_image(self, path):
-            """Copy an image into the app's pet folder; return the new path
-            (or the original path if the copy fails)."""
-            import shutil
+        def _save_pet_image(self, src_path, img):
+            """Save a (possibly cut-out) pet image into the app's pet folder as
+            PNG, so transparency is kept; return the new path."""
             pets_dir = os.path.join(config_dir(), "custom_pets")
-            try:
-                os.makedirs(pets_dir, exist_ok=True)
-            except OSError:
-                return path
-            ext = os.path.splitext(path)[1].lower() or ".png"
-            stem = os.path.splitext(os.path.basename(path))[0] or "pet"
-            dest = os.path.join(pets_dir, stem + ext)
+            os.makedirs(pets_dir, exist_ok=True)
+            stem = os.path.splitext(os.path.basename(src_path))[0] or "pet"
+            dest = os.path.join(pets_dir, stem + ".png")
             n = 1
             while os.path.exists(dest):
-                dest = os.path.join(pets_dir, f"{stem}_{n}{ext}")
+                dest = os.path.join(pets_dir, f"{stem}_{n}.png")
                 n += 1
-            try:
-                shutil.copyfile(path, dest)
-            except Exception:
-                return path
+            img.save(dest)
             return dest
 
         def choose_custom_image(self):
-            """Pick one or more images and add them to your pet gallery."""
-            from tkinter import filedialog, messagebox
+            """Pick one or more images, cut out the background, and add them."""
+            from tkinter import filedialog
             paths = filedialog.askopenfilenames(
                 title="Choose image(s) for your pets",
                 filetypes=[("Images", "*.png *.gif *.jpg *.jpeg *.bmp *.webp"),
                            ("All files", "*.*")])
             if not paths:
                 return
-            added, bad, last = 0, 0, None
+            if self.s.get("cutout_pets", True):
+                self.say("Making your pet... the first time I may take a minute "
+                         "to download the cut-out model.", 8)
+            else:
+                self.say("Adding your pet...", 4)
+            import threading
+            threading.Thread(target=self._process_new_pets,
+                             args=(list(paths),), daemon=True).start()
+
+        def _process_new_pets(self, paths):
+            """Worker thread: load, optionally remove the background, and save
+            each image, then hand the results back to the UI thread."""
+            cut = self.s.get("cutout_pets", True)
+            out, bad = [], 0
             for path in paths:
-                if load_custom_image(path) is None:
+                img = load_custom_image(path)
+                if img is None:
                     bad += 1
                     continue
-                dest = self._store_custom_image(path)
-                name = _unique_pet_name(_name_from_path(path),
+                try:
+                    if cut:
+                        img = remove_background(img)
+                    dest = self._save_pet_image(path, img)
+                    out.append((path, dest))
+                except Exception:
+                    bad += 1
+            self.root.after(0, lambda: self._pets_added(out, bad))
+
+        def _pets_added(self, out, bad):
+            """UI thread: register the newly made pets and switch to the last."""
+            from tkinter import messagebox
+            last = None
+            for src, dest in out:
+                name = _unique_pet_name(_name_from_path(src),
                                         self.s["custom_pets"])
                 self.s["custom_pets"].append({"name": name, "path": dest})
-                last, added = dest, added + 1
+                last = dest
             if last is not None:
                 self.s["custom_image"] = last
                 self.s["character"] = "custom"
@@ -919,14 +1071,15 @@ def run_app(settings):
             self._build_frames()
             self._build_menu()
             self._update_tray_icon()
-            if added == 1:
+            n = len(out)
+            if n == 1:
                 self.say("Ooh, a new look!", 4)
-            elif added > 1:
-                self.say(f"Added {added} new pets! Right-click to switch.", 5)
+            elif n > 1:
+                self.say(f"Added {n} new pets! Right-click to switch.", 5)
             if bad:
                 messagebox.showerror(
-                    APP_NAME, f"Couldn't read {bad} image(s). A PNG with a "
-                    "transparent background works best.")
+                    APP_NAME, f"Couldn't use {bad} image(s). A clear photo of "
+                    "a person or character works best.")
 
         def set_custom_pet(self, path):
             """Switch to one of the custom pets already in the gallery."""
@@ -1281,6 +1434,12 @@ def run_app(settings):
                 row=row, column=0, columnspan=2, sticky="w", **pad)
             row += 1
 
+            self.cutout_var = tk.BooleanVar(value=self.s.get("cutout_pets", True))
+            tk.Checkbutton(w, text="Cut out background when adding an image",
+                           variable=self.cutout_var).grid(
+                row=row, column=0, columnspan=2, sticky="w", **pad)
+            row += 1
+
             self.startup_var = tk.BooleanVar(value=self.s["start_with_windows"])
             tk.Checkbutton(w, text="Start with Windows",
                            variable=self.startup_var).grid(
@@ -1339,6 +1498,7 @@ def run_app(settings):
             self.s["pomodoro_focus"] = focus
             self.s["care_enabled"] = bool(self.care_var.get())
             self.s["sound"] = bool(self.sound_var.get())
+            self.s["cutout_pets"] = bool(self.cutout_var.get())
             if new_size != self.s["size"]:
                 self.s["size"] = new_size
                 app.resize(new_size)
@@ -1585,6 +1745,17 @@ def selftest(outdir=None):
     assert _name_from_path("/x/THOR_wall.jpg") == "Thor Wall"
     assert _unique_pet_name("Hulk", [{"name": "Hulk"}]) == "Hulk (2)"
     assert _unique_pet_name("Hulk", [{"name": "Thor"}]) == "Hulk"
+    # background-removal heuristic fallback (no network / no model needed):
+    # a magenta blob on a solid white field should come back with a
+    # transparent background and the subject kept.
+    bg = Image.new("RGB", (80, 80), (255, 255, 255))
+    ImageDraw.Draw(bg).ellipse([24, 24, 56, 56], fill=(200, 120, 255))
+    cut = _heuristic_cutout(bg)
+    assert cut.mode == "RGBA" and cut.size == (80, 80)
+    assert cut.getpixel((0, 0))[3] == 0           # corner transparent
+    assert cut.getpixel((40, 40))[3] == 255       # subject kept
+    cut.save(os.path.join(outdir, "cutout_heuristic.png"))
+    results.append("cutout_heuristic.png")
     # settings round-trip
     s = load_settings()
     save_settings(s)

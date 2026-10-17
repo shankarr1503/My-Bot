@@ -48,11 +48,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt -r requirements-companion.txt pyinstaller
 
       - name: Generate image assets (icons, tiles, splash)
         run: python packaging/generate_assets.py
 
+      # The Desktop Companion bundles onnxruntime + numpy (requirements-companion)
+      # so it can cut out the background of an uploaded image automatically.
       - name: Build Desktop Companion (the pet app)
         run: pyinstaller --noconfirm --clean packaging/DesktopCompanion.spec
 
