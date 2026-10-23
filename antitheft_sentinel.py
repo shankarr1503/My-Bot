@@ -36,33 +36,39 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
-import config
+import suite_common
+
+config = suite_common.load_config()
 
 # Security-log event ids that mean "a logon was refused".
 #   4625 - an account failed to log on (the main one: wrong password, and on
 #          most machines wrong Windows Hello PIN too)
-#   4776 - the computer failed to validate credentials
+#   4776 - the computer tried to validate credentials. This is written for
+#          SUCCESS as well as failure, so we must filter on a non-zero status
+#          (see recent_failures); without that, every good NTLM/local logon
+#          would look like an attack.
 FAIL_IDS = [4625, 4776]
 
-STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "sentinel_seen.json")
+STATE = os.path.join(suite_common.data_dir(), "sentinel_seen.json")
 PS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
 def send(text):
-    """Send one Telegram message. Best effort; never raises."""
+    """Send one Telegram message. Returns True on success, False otherwise
+    (so the caller can retry instead of marking the event as reported)."""
     if not getattr(config, "BOT_TOKEN", "") or "PASTE" in config.BOT_TOKEN:
-        return
+        return False
     if not getattr(config, "CHAT_ID", ""):
-        return
+        return False
     try:
         data = urllib.parse.urlencode(
             {"chat_id": config.CHAT_ID, "text": text}).encode()
         urllib.request.urlopen(
             f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage",
             data, timeout=8)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def send_photo(path, caption):
@@ -157,16 +163,29 @@ def recent_failures(minutes=5):
     (why it failed), [10] LogonType (how it was attempted).
     """
     ids = ",".join(str(i) for i in FAIL_IDS)
+    # 4625 (failed logon) and 4776 (credential validation) lay their fields out
+    # differently, and 4776 is also written on SUCCESS -- so we branch on the id
+    # and drop any 4776 whose status is 0 (success). 4625's SubStatus is at [9];
+    # 4776's Status is at [3] and its account name at [1], with no LogonType.
     script = (
         f"$start=(Get-Date).AddMinutes(-{minutes}); "
         f"Get-WinEvent -FilterHashtable @{{LogName='Security';Id={ids};"
         f"StartTime=$start}} -ErrorAction SilentlyContinue | "
-        "ForEach-Object { [pscustomobject]@{ "
+        "ForEach-Object { "
+        "if ($_.Id -eq 4625) { [pscustomobject]@{ "
         "id=$_.Id; time=$_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'); "
         "record=$_.RecordId; "
         "user=[string]$_.Properties[5].Value; "
         "substatus=[string]$_.Properties[9].Value; "
-        "logontype=[string]$_.Properties[10].Value; } } | ConvertTo-Json -Compress")
+        "logontype=[string]$_.Properties[10].Value } } "
+        "elseif ($_.Id -eq 4776) { "
+        "$st=[string]$_.Properties[3].Value; "
+        "if ($st -and $st -ne '0x0' -and $st -ne '0') { [pscustomobject]@{ "
+        "id=$_.Id; time=$_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'); "
+        "record=$_.RecordId; "
+        "user=[string]$_.Properties[1].Value; "
+        "substatus=$st; logontype='' } } } "
+        "} | ConvertTo-Json -Compress")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
                             "-Command", script],
@@ -212,9 +231,15 @@ def _seen():
 
 def _remember(records):
     try:
-        keep = list(records)[-500:]      # don't let it grow forever
-        with open(STATE, "w", encoding="utf-8") as f:
-            json.dump(keep, f)
+        # Keep the most RECENT 500 (by numeric record id), not a random 500 from
+        # a set -- a set has no order, so the old slice could throw away the
+        # newest ids under a brute-force burst and re-report them next run. The
+        # write is atomic so a crash can't corrupt the file.
+        def _key(r):
+            s = str(r)
+            return int(s) if s.isdigit() else -1
+        keep = sorted(records, key=_key)[-500:]
+        suite_common.atomic_write_json(STATE, keep)
     except OSError:
         pass
 
@@ -236,7 +261,12 @@ def report_new(minutes=5, with_photo=True):
         lines.append("  " + _describe(e))
     lines.append("")
     lines.append("Someone is trying to get past the login screen.")
-    send("\n".join(lines))
+
+    # Only mark these as reported if the alert actually went through. A thief
+    # trying PINs before Wi-Fi connects would otherwise have every attempt
+    # silently recorded as "already reported" and never resent once we're back.
+    if not send("\n".join(lines)):
+        return 0
 
     if with_photo:
         cam = try_webcam()

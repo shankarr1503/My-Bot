@@ -31,25 +31,20 @@ import sys
 import threading
 import time
 
+import suite_common
+
 # --- where we live, and where config.py should go ---------------------------
-if getattr(sys, "frozen", False):
-    HERE = os.path.dirname(sys.executable)
-    BUNDLE = getattr(sys, "_MEIPASS", HERE)
-else:
-    HERE = BUNDLE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "config.py")
+HERE = suite_common.app_dir()
+BUNDLE = suite_common.bundle_dir()
+CONFIG_PATH = suite_common.config_path()
 
 
 def _example_path():
-    for p in (os.path.join(HERE, "config.example.py"),
-              os.path.join(BUNDLE, "config.example.py")):
-        if os.path.exists(p):
-            return p
-    return None
+    return suite_common.example_config_path()
 
 
 APP_TITLE = "Laptop Monitor Bot - Dashboard"
-VERSION = "1.0.0"
+VERSION = "1.2.0"
 
 # Every configurable value: key, python type, default, and a friendly label.
 # Order controls how they appear on the Settings tab.
@@ -132,8 +127,7 @@ def write_config(values):
         else:
             text += f"\n{line}\n"
 
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        f.write(text)
+    suite_common.atomic_write_text(CONFIG_PATH, text)
     return CONFIG_PATH
 
 
@@ -191,7 +185,6 @@ def run_app():
     except Exception:
         wiz = None
 
-    import random
     import urllib.request
 
     try:
@@ -476,6 +469,23 @@ def run_app():
             vals = self._collect()
             try:
                 path = write_config(vals)
+            except PermissionError:
+                # The installed config lives in %ProgramData%\MonitorBot, which
+                # only admins can write (on purpose). Offer to relaunch elevated.
+                if (suite_common.is_installed() and not suite_common.is_admin()
+                        and messagebox.askokcancel(
+                            APP_TITLE,
+                            "Saving settings needs administrator rights "
+                            "(the config is in a protected folder).\n\n"
+                            "Reopen the Dashboard as administrator now?")):
+                    if suite_common.relaunch_as_admin():
+                        self.root.destroy()
+                        return
+                messagebox.showerror(
+                    APP_TITLE, "Couldn't save config: administrator rights "
+                    "are required. Right-click the Dashboard and choose "
+                    "'Run as administrator'.")
+                return
             except Exception as e:
                 messagebox.showerror(APP_TITLE, f"Couldn't save config:\n{e}")
                 return
@@ -512,7 +522,17 @@ def run_app():
                 return
             if self.detect_thread and self.detect_thread.is_alive():
                 return
-            code = f"{random.randrange(1000000):06d}"
+            # Linking polls Telegram with getUpdates. If the bot is already
+            # running it is polling the same token, and two pollers 409-conflict
+            # (and the bot would eat the code). Refuse while it's up.
+            if (self.proc and self.proc.poll() is None) or \
+                    suite_common.instance_running(suite_common.BOT_MUTEX):
+                self.link_status.config(
+                    text="Stop the bot first (Control tab) - it can't be "
+                         "running while you link.", fg=BAD)
+                return
+            import secrets
+            code = f"{secrets.randbelow(1000000):06d}"
             self.link_status.config(
                 text=f"Send this code to your bot in Telegram (private chat):\n"
                      f"        {code}\nWaiting for it...", fg=MUTE)
@@ -700,6 +720,11 @@ def run_app():
 def main():
     if "--selftest" in sys.argv:
         selftest()
+        return
+    # One dashboard at a time: a second launch focuses the first instead of
+    # opening another window that would fight over config.py.
+    if not suite_common.acquire_single_instance(suite_common.DASHBOARD_MUTEX):
+        suite_common.bring_window_to_front(APP_TITLE)
         return
     run_app()
 

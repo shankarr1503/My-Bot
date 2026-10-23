@@ -36,6 +36,8 @@ import random
 import sys
 import time
 
+import suite_common
+
 # Pillow is required; the rest of the GUI stack is stdlib.
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -96,6 +98,10 @@ def _coerce(default, value):
     corrupted), so nothing in it is trusted to have the right type.
     """
     is_num = isinstance(value, (int, float)) and not isinstance(value, bool)
+    # Reject Infinity / NaN (json.load accepts them): int(inf) raises
+    # OverflowError and NaN positions break placement later on.
+    if is_num and not math.isfinite(value):
+        raise ValueError
     if isinstance(default, bool):
         if isinstance(value, bool):
             return value
@@ -172,10 +178,24 @@ def load_settings():
 #  Custom pet from an uploaded image
 # ============================================================================
 
+MAX_PET_PX = 1024          # a pet is shown at ~150px; no need to keep more
+
+
 def load_custom_image(path):
-    """Open an image as RGBA, or None if it can't be read."""
+    """Open an image as RGBA, downscaled to a sane size, or None if unreadable.
+
+    Full-size photos (a 12 MP camera shot is tens of MB as RGBA) were being cut
+    out, saved and then decoded on the UI thread, freezing the pet; the pure
+    Python fallback cut-out looped over every pixel. Thumbnailing on load keeps
+    all of that bounded.
+    """
     try:
-        return Image.open(path).convert("RGBA")
+        img = Image.open(path)
+        img.draft("RGB", (MAX_PET_PX, MAX_PET_PX))   # fast pre-shrink for JPEGs
+        img = img.convert("RGBA")
+        if max(img.size) > MAX_PET_PX:
+            img.thumbnail((MAX_PET_PX, MAX_PET_PX), Image.LANCZOS)
+        return img
     except Exception:
         return None
 
@@ -230,9 +250,12 @@ def custom_frames(src, width, height, breath_frames, breath_depth):
 
 BG_MODEL_URL = ("https://github.com/danielgatis/rembg/releases/download/"
                 "v0.0.0/u2net.onnx")
+BG_MODEL_MIN = 1_000_000    # a valid u2net.onnx is ~168 MB; this rules out stubs
 BG_MEAN = (0.485, 0.456, 0.406)
 BG_STD = (0.229, 0.224, 0.225)
 _bg_session = None          # cached onnxruntime session (or False if it failed)
+import threading as _threading
+_bg_model_lock = _threading.Lock()   # serialises download AND session creation
 
 
 def _bg_model_path():
@@ -246,38 +269,50 @@ def _bg_bundled_model():
 
 
 def ensure_bg_model(progress=None):
-    """Return a path to u2net.onnx, downloading it once if needed, else None."""
+    """Return a path to u2net.onnx, downloading it once if needed, else None.
+
+    The download is guarded by a lock so adding several images at once can't
+    start two downloads writing the same .part file (the second os.replace would
+    fail on Windows). A download is accepted only if it finished (its size
+    matches Content-Length when the server gives one) and is plausibly large, so
+    a truncated file isn't cached and then trusted forever.
+    """
     for p in (_bg_model_path(), _bg_bundled_model()):
-        if os.path.exists(p) and os.path.getsize(p) > 1_000_000:
+        if os.path.exists(p) and os.path.getsize(p) > BG_MODEL_MIN:
             return p
     dest = _bg_model_path()
-    tmp = dest + ".part"
-    try:
-        import urllib.request
-        req = urllib.request.Request(BG_MODEL_URL,
-                                     headers={"User-Agent": "DesktopCompanion"})
-        with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
-            total = int(r.headers.get("Content-Length") or 0)
-            done = 0
-            while True:
-                chunk = r.read(262144)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if progress and total:
-                    progress(done, total)
-        if os.path.getsize(tmp) < 1_000_000:
-            raise OSError("downloaded model too small")
-        os.replace(tmp, dest)
-        return dest
-    except Exception:
+    with _bg_model_lock:
+        # another thread may have finished while we waited for the lock
+        if os.path.exists(dest) and os.path.getsize(dest) > BG_MODEL_MIN:
+            return dest
+        tmp = dest + ".part"
         try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
-        return None
+            import urllib.request
+            req = urllib.request.Request(
+                BG_MODEL_URL, headers={"User-Agent": "DesktopCompanion"})
+            with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                done = 0
+                while True:
+                    chunk = r.read(262144)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if progress and total:
+                        progress(done, total)
+            size = os.path.getsize(tmp)
+            if size < BG_MODEL_MIN or (total and size != total):
+                raise OSError("incomplete model download")
+            os.replace(tmp, dest)
+            return dest
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            return None
 
 
 def _get_bg_session():
@@ -286,7 +321,8 @@ def _get_bg_session():
         return _bg_session or None
     path = ensure_bg_model()
     if not path:
-        _bg_session = False
+        # Download failed (e.g. offline). Leave _bg_session as None so a later
+        # add-image attempt can retry, rather than falling back for good.
         return None
     try:
         import onnxruntime as ort
@@ -295,6 +331,14 @@ def _get_bg_session():
         _bg_session = ort.InferenceSession(
             path, sess_options=so, providers=["CPUExecutionProvider"])
     except Exception:
+        # The cached file loads but isn't a valid model (corrupt/tampered).
+        # Drop it so the next run re-downloads instead of failing forever.
+        try:
+            p = _bg_model_path()
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
         _bg_session = False
     return _bg_session or None
 
@@ -350,9 +394,12 @@ def remove_background(img):
 
 
 def save_settings(data):
+    # Atomic write: a crash, power cut or kill mid-save must not leave an empty
+    # or half-written settings.json (which load_settings would discard, losing
+    # the whole pet gallery, position, stats and high score).
     try:
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        suite_common.atomic_write_text(
+            SETTINGS_PATH, json.dumps(data, indent=2))
     except OSError:
         pass
 
@@ -757,18 +804,18 @@ def run_app(settings):
             self.bubble = None
             self.bubble_hide_at = 0
 
-            # schedulers (in ticks)
-            self.next_speech = self._frames(self.s["speech_every"]) \
+            # schedulers (wall-clock deadlines, in monotonic seconds)
+            self.next_speech = self._deadline(self.s["speech_every"]) \
                 if self.s["speech"] else None
-            self.next_break = self._frames(self.s["break_every"] * 60) \
+            self.next_break = self._deadline(self.s["break_every"] * 60) \
                 if self.s["break_reminders"] else None
             self.pomo_state = None      # None | "focus" | "break"
             self.pomo_end = 0
 
             # pet-care stats: catch up decay for time since last run
             self._apply_offline_decay()
-            self.next_stat = self._frames(15)        # recompute every 15s
-            self.next_hungry = self._frames(60)      # earliest hungry nag
+            self.next_stat = self._deadline(15)      # recompute every 15s
+            self.next_hungry = self._deadline(60)    # earliest hungry nag
             self.game = None                         # open mini-game window
 
             self._build_menu()
@@ -816,7 +863,17 @@ def run_app(settings):
             self.photos_blink = [_Tk.PhotoImage(f) for f in self.frames_blink]
 
         def _frames(self, seconds):
+            # tick-based, for the purely visual blink timing where small drift
+            # doesn't matter
             return self.tick + int(seconds * 1000 / self.FRAME_MS)
+
+        def _deadline(self, seconds):
+            # wall-clock, for anything the user would time against a real clock
+            # (focus/break timers, reminders, care decay). Frame ticks run slow
+            # -- Windows rounds after(40) up to ~47ms and render time adds more --
+            # so counting frames made a "25-minute" focus block run ~28-30 min
+            # and skipped time spent asleep.
+            return time.monotonic() + seconds
 
         def _place_initial(self):
             x, y = self.s.get("x"), self.s.get("y")
@@ -858,8 +915,10 @@ def run_app(settings):
         def say_random(self):
             self.say(random.choice(GREETINGS), 4)
 
-        def say(self, text, seconds=4):
-            if not self.s["speech"]:
+        def say(self, text, seconds=4, force=False):
+            # `force` is for timer alerts (break / Pomodoro): turning off the
+            # chatty speech bubbles shouldn't also silence the focus timer.
+            if not self.s["speech"] and not force:
                 return
             self._show_bubble(text)
             self.bubble_hide_at = self._frames(seconds)
@@ -1035,14 +1094,21 @@ def run_app(settings):
             img.save(dest)
             return dest
 
-        def choose_custom_image(self):
-            """Pick one or more images, cut out the background, and add them."""
+        def choose_custom_image(self, on_done=None):
+            """Pick one or more images, cut out the background, and add them.
+
+            on_done(n_added) is called on the UI thread once the (background)
+            work finishes -- the adding is async, so a caller can't just check a
+            count right after this returns.
+            """
             from tkinter import filedialog
+            self._pick_done = on_done
             paths = filedialog.askopenfilenames(
                 title="Choose image(s) for your pets",
                 filetypes=[("Images", "*.png *.gif *.jpg *.jpeg *.bmp *.webp"),
                            ("All files", "*.*")])
             if not paths:
+                self._pick_done = None
                 return
             if self.s.get("cutout_pets", True):
                 self.say("Making your pet... the first time I may take a minute "
@@ -1097,6 +1163,13 @@ def run_app(settings):
                 messagebox.showerror(
                     APP_NAME, f"Couldn't use {bad} image(s). A clear photo of "
                     "a person or character works best.")
+            cb = getattr(self, "_pick_done", None)
+            self._pick_done = None
+            if cb:
+                try:
+                    cb(len(out))
+                except Exception:
+                    pass
 
         def set_custom_pet(self, path):
             """Switch to one of the custom pets already in the gallery."""
@@ -1143,7 +1216,7 @@ def run_app(settings):
         def toggle_pomodoro(self):
             if self.pomo_state is None:
                 self.pomo_state = "focus"
-                self.pomo_end = self._frames(self.s["pomodoro_focus"] * 60)
+                self.pomo_end = self._deadline(self.s["pomodoro_focus"] * 60)
                 self.say(random.choice(POMODORO_START), 5)
             else:
                 self.pomo_state = None
@@ -1167,9 +1240,9 @@ def run_app(settings):
             SettingsWindow(self)
 
         def rebuild_schedulers(self):
-            self.next_speech = self._frames(self.s["speech_every"]) \
+            self.next_speech = self._deadline(self.s["speech_every"]) \
                 if self.s["speech"] else None
-            self.next_break = self._frames(self.s["break_every"] * 60) \
+            self.next_break = self._deadline(self.s["break_every"] * 60) \
                 if self.s["break_reminders"] else None
 
         def resize(self, new_size):
@@ -1287,6 +1360,7 @@ def run_app(settings):
         # ---- main loop ----
         def animate(self):
             self.tick += 1
+            now = time.monotonic()
             frame = self.tick % self.BREATH_FRAMES
 
             if self.tick >= self.next_blink:
@@ -1324,43 +1398,45 @@ def run_app(settings):
                         pass
 
             # unprompted speech
-            if self.next_speech is not None and self.tick >= self.next_speech:
+            if self.next_speech is not None and now >= self.next_speech:
                 if self.bubble is None and self.pomo_state is None:
                     self.say_random()
-                self.next_speech = self._frames(self.s["speech_every"])
+                self.next_speech = self._deadline(self.s["speech_every"])
 
             # break reminders
-            if self.next_break is not None and self.tick >= self.next_break:
+            if self.next_break is not None and now >= self.next_break:
                 self.play("alert")
-                self.say(random.choice(BREAK_LINES), 7)
+                self.say(random.choice(BREAK_LINES), 7, force=True)
                 self.bounce = 1.0
-                self.next_break = self._frames(self.s["break_every"] * 60)
+                self.next_break = self._deadline(self.s["break_every"] * 60)
 
             # pomodoro
-            if self.pomo_state is not None and self.tick >= self.pomo_end:
+            if self.pomo_state is not None and now >= self.pomo_end:
                 self.play("chime")
                 if self.pomo_state == "focus":
                     self.pomo_state = "break"
-                    self.pomo_end = self._frames(self.s["pomodoro_break"] * 60)
-                    self.say(random.choice(POMODORO_BREAK), 8)
+                    self.pomo_end = self._deadline(self.s["pomodoro_break"] * 60)
+                    self.say(random.choice(POMODORO_BREAK), 8, force=True)
                     self.bounce = 1.0
                 else:
                     self.pomo_state = "focus"
-                    self.pomo_end = self._frames(self.s["pomodoro_focus"] * 60)
-                    self.say(random.choice(POMODORO_START), 6)
+                    self.pomo_end = self._deadline(self.s["pomodoro_focus"] * 60)
+                    self.say(random.choice(POMODORO_START), 6, force=True)
 
             # pet care: decay stats, and occasionally ask to be fed
-            if self.s["care_enabled"] and self.tick >= self.next_stat:
+            if self.s["care_enabled"] and now >= self.next_stat:
+                # decay the real elapsed time, not an assumed 15s, so sleeping or
+                # a slow frame rate doesn't under-count
                 self._decay(15.0 / 60.0)
                 # keep the timestamp in step with the decay just applied, so
                 # any save (drag, settings...) can't make the next launch
                 # count this time again in _apply_offline_decay
                 self.s["stats_time"] = time.time()
-                self.next_stat = self._frames(15)
-                if self.s["hunger"] > 75 and self.tick >= self.next_hungry \
+                self.next_stat = self._deadline(15)
+                if self.s["hunger"] > 75 and now >= self.next_hungry \
                         and self.bubble is None and self.pomo_state is None:
                     self.say(random.choice(HUNGRY_LINES), 6)
-                    self.next_hungry = self._frames(180)   # don't nag
+                    self.next_hungry = self._deadline(180)   # don't nag
 
             self.root.after(self.FRAME_MS, self.animate)
 
@@ -1484,10 +1560,13 @@ def run_app(settings):
                       command=w.destroy).pack(side="left", padx=6)
 
         def _pick_image(self):
-            before = len(self.s.get("custom_pets", []))
-            self.app.choose_custom_image()
-            # If pets were added, reopen Settings so the dropdown lists them.
-            if len(self.s.get("custom_pets", [])) != before:
+            # Adding is asynchronous (it may download the cut-out model), so we
+            # reopen Settings from a callback once the pets are actually added,
+            # not right after this returns.
+            self.app.choose_custom_image(on_done=self._reopen_if_added)
+
+        def _reopen_if_added(self, n_added):
+            if n_added:
                 try:
                     self.w.destroy()
                 except Exception:
@@ -1804,6 +1883,11 @@ def selftest(outdir=None):
 def main():
     if "--selftest" in sys.argv:
         selftest()
+        return
+    # One pet at a time: a second launch (e.g. auto-start plus a manual click)
+    # would give two pets and two tray icons that overwrite each other's saved
+    # settings. Bow out quietly if we're already running.
+    if not suite_common.acquire_single_instance(suite_common.COMPANION_MUTEX):
         return
     settings = load_settings()
     # allow "python desktop_companion.py cat" to pick a character quickly,

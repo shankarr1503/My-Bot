@@ -26,19 +26,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# In a PyInstaller build, __file__ points inside the temporary bundle folder.
-# The user's config.py must live beside the .exe instead, so it survives
-# restarts and can be edited; the template ships inside the bundle.
-if getattr(sys, "frozen", False):
-    HERE = os.path.dirname(sys.executable)
-    BUNDLE = getattr(sys, "_MEIPASS", HERE)
-else:
-    HERE = BUNDLE = os.path.dirname(os.path.abspath(__file__))
-CONFIG = os.path.join(HERE, "config.py")
-EXAMPLE = next((p for p in (os.path.join(HERE, "config.example.py"),
-                            os.path.join(BUNDLE, "config.example.py"))
-                if os.path.exists(p)),
-               os.path.join(HERE, "config.example.py"))
+import suite_common
+
+HERE = suite_common.app_dir()
+BUNDLE = suite_common.bundle_dir()
+# config.py lives wherever suite_common puts it: %ProgramData%\MonitorBot once
+# installed, else beside the script/exe for a source checkout.
+CONFIG = suite_common.config_path()
+EXAMPLE = suite_common.example_config_path() or os.path.join(HERE, "config.example.py")
 API = "https://api.telegram.org/bot{token}/{method}"
 
 
@@ -172,45 +167,58 @@ def write_config(token, chat_id):
 
     def repl(name, value, body):
         pattern = re.compile(rf'^(\s*){name}\s*=.*$', re.MULTILINE)
-        line_ = f'{name} = "{value}"'
+        # repr() so quotes, backslashes or anything else pasted in can't break
+        # the file or, worse, become code the (possibly elevated) bot executes.
+        line_ = f'{name} = {value!r}'
         if pattern.search(body):
-            return pattern.sub(lambda m: m.group(1) + line_, body, count=1)
+            return pattern.sub(lambda m, ln=line_: m.group(1) + ln, body, count=1)
         return body + f"\n{line_}\n"
 
-    text = repl("BOT_TOKEN", token, text)
-    text = repl("CHAT_ID", chat_id, text)
+    text = repl("BOT_TOKEN", str(token), text)
+    text = repl("CHAT_ID", str(chat_id), text)
 
-    with open(CONFIG, "w", encoding="utf-8") as f:
-        f.write(text)
+    suite_common.atomic_write_text(CONFIG, text)
     return CONFIG
 
 
 def offer_autostart():
-    """Add the bot (and companion) to Windows startup via the registry."""
+    """Explain how to make the bot start automatically.
+
+    The production way -- start at every log on, elevated (so the security and
+    anti-theft commands work), plus the boot-armed anti-theft sentinel -- is the
+    installer, install_monitor.ps1, which sets up Scheduled Tasks. That is more
+    robust than an HKCU\\Run entry (which can't run elevated and isn't armed
+    before log on), so we point there rather than writing a registry key.
+    """
     if os.name != "nt":
         print("(Auto-start is Windows-only; skipping.)")
         return
-    if not yesno("Start the bot automatically when you log in to Windows?",
-                 default=False):
-        return
+    print("\nTo start the bot automatically at every log on (running as admin,")
+    print("so screenshots, Defender and the anti-theft sentinel all work),")
+    print("right-click install_monitor.ps1 and choose 'Run with PowerShell',")
+    print("or from an elevated PowerShell run:")
+    print("    powershell -ExecutionPolicy Bypass -File install_monitor.ps1")
+    if not getattr(sys, "frozen", False):
+        if yesno("\nAlternatively, add a simple (non-elevated) start at log on "
+                 "now via the registry?", default=False):
+            _hkcu_autostart()
+
+
+def _hkcu_autostart():
     try:
         import winreg
-        if getattr(sys, "frozen", False):
-            cmd = f'"{sys.executable}"'          # the packaged MonitorBot.exe
-        else:
-            pyw = sys.executable
-            # prefer pythonw.exe so no console window pops up
-            cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
-            if os.path.exists(cand):
-                pyw = cand
-            cmd = f'"{pyw}" "{os.path.join(HERE, "monitor_bot.py")}"'
+        pyw = sys.executable
+        cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
+        if os.path.exists(cand):
+            pyw = cand
+        cmd = f'"{pyw}" "{os.path.join(HERE, "monitor_bot.py")}"'
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
             winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, "LaptopMonitorBot", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
-        print("Done - the bot will start with Windows.")
+        print("Done - the bot will start (non-elevated) when you log in.")
     except Exception as e:
         print("Couldn't set auto-start:", e)
 

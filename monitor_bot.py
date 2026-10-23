@@ -33,6 +33,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
+import suite_common
+
 # `--setup` runs the stdlib-only wizard before anything a fresh install may be
 # missing: the third-party packages below, or config.py itself (the wizard is
 # what creates it).
@@ -51,44 +53,11 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 
-def _load_config():
-    """Load config.py from beside this script - or beside the .exe in a
-    PyInstaller build - so the user's edits apply without rebuilding.
-
-    A plain `import config` would freeze the build machine's config.py (and
-    its bot token) into the executable. With no config.py yet, fall back to
-    the defaults in config.example.py; credentials can then still come from
-    the MONITORBOT_* environment variables.
-    """
-    import importlib.util
-    import types
-    if getattr(sys, "frozen", False):
-        here = os.path.dirname(sys.executable)
-        bundle = getattr(sys, "_MEIPASS", here)
-    else:
-        here = bundle = os.path.dirname(os.path.abspath(__file__))
-    for path in (os.path.join(here, "config.py"),
-                 os.path.join(here, "config.example.py"),
-                 os.path.join(bundle, "config.example.py")):
-        if os.path.exists(path):
-            spec = importlib.util.spec_from_file_location("config", path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod
-    return types.SimpleNamespace(
-        BOT_TOKEN="", CHAT_ID="",
-        WATCH_FOLDER=os.path.join(os.path.expanduser("~"), "Downloads"),
-        NET_CHECK_INTERVAL=60, SHUTDOWN_DELAY=30)
-
-
-config = _load_config()
-
-# Let environment variables fill in anything config.py left blank. This lets a
-# packaged build inject credentials without the user editing a .py file.
-if not getattr(config, "BOT_TOKEN", "") or "PASTE" in config.BOT_TOKEN:
-    config.BOT_TOKEN = os.environ.get("MONITORBOT_TOKEN", config.BOT_TOKEN)
-if not getattr(config, "CHAT_ID", ""):
-    config.CHAT_ID = os.environ.get("MONITORBOT_CHAT_ID", config.CHAT_ID)
+# Config is loaded by suite_common: from %ProgramData%\MonitorBot\config.py once
+# installed (a folder only administrators can write, so the elevated bot never
+# imports user-writable code), else from beside this script/exe for a source
+# checkout. The MONITORBOT_* environment variables fill any blanks.
+config = suite_common.load_config()
 
 
 # ----------------------------- helpers -----------------------------
@@ -133,16 +102,51 @@ def build_status(bold=True):
 PS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
-def _powershell(script, timeout=20):
-    """Run a PowerShell snippet, return stdout (or "" if anything goes wrong)."""
+def _decode(b):
+    """Decode PowerShell's bytes. Windows PowerShell 5.1 writes redirected
+    output in the OEM code page, not the locale one, and strict decoding would
+    raise UnicodeDecodeError on a stray accented character (a window title, a
+    clipboard, a network name). Try UTF-8, then cp437, and never fail."""
+    if b is None:
+        return ""
+    if isinstance(b, str):
+        return b
+    for enc in ("utf-8", "cp437", "cp850"):
+        try:
+            return b.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return b.decode("utf-8", "replace")
+
+
+def _run_ps(script, timeout, env_vars=None):
+    """Run PowerShell and return (returncode, stdout, stderr) as text. Bytes
+    are captured and decoded leniently, so non-ASCII output never crashes the
+    caller.
+
+    `env_vars` carries any untrusted text (a message to speak, a path to scan).
+    The script reads it with $env:NAME, so it is data the shell never parses as
+    code -- the only safe way to pass user input into PowerShell.
+    """
+    env = None
+    if env_vars:
+        env = dict(os.environ)
+        env.update({k: str(v) for k, v in env_vars.items()})
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=timeout, **PS_FLAGS,
+            capture_output=True, timeout=timeout, env=env, **PS_FLAGS,
         )
-        return r.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
+        return r.returncode, _decode(r.stdout).strip(), _decode(r.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return -2, "", "timed out"
+    except (OSError, subprocess.SubprocessError) as e:
+        return -1, "", str(e)
+
+
+def _powershell(script, timeout=20):
+    """Run a PowerShell snippet, return stdout (or "" if anything goes wrong)."""
+    return _run_ps(script, timeout)[1]
 
 
 def wifi_info():
@@ -244,9 +248,10 @@ def build_where():
     return "\n".join(lines)
 
 
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "app_state.json")
+STATE_FILE = os.path.join(suite_common.data_dir(), "app_state.json")
 TG_LIMIT = 4096          # Telegram rejects anything longer
+
+_STATE_LOCK = threading.Lock()
 
 
 def _load_state():
@@ -257,12 +262,22 @@ def _load_state():
         return {}
 
 
-def _save_state(d):
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f)
-    except OSError:
-        pass
+def _update_state(**changes):
+    """Merge `changes` into the state file, keeping every other key.
+
+    The old code overwrote the whole file, so the app report (which saves
+    'apps'/'time') wiped the threat watch's 'last_threat_seen', and the next
+    real threat went unreported. The read-modify-write is locked and atomic so
+    concurrent jobs and a crash mid-save can't corrupt or lose it.
+    """
+    with _STATE_LOCK:
+        state = _load_state()
+        state.update(changes)
+        try:
+            suite_common.atomic_write_json(STATE_FILE, state)
+        except OSError:
+            pass
+        return state
 
 
 def app_inventory():
@@ -357,7 +372,7 @@ def build_app_report():
         L.append(f"CLOSED since last report  ({len(closed)})")
         L.append("  " + (", ".join(closed[:25]) if closed else "nothing closed"))
 
-    _save_state({"apps": now_names, "time": f"{datetime.now():%Y-%m-%d %H:%M}"})
+    _update_state(apps=now_names, time=f"{datetime.now():%Y-%m-%d %H:%M}")
 
     text = "\n".join(L)
     if len(text) > TG_LIMIT:
@@ -438,13 +453,27 @@ def owner_only(func):
     """
     @functools.wraps(func)
     async def wrapper(update, context):
+        # Editing an old message must not re-run the command (and update.message
+        # is None for edits, which would crash the handler).
+        if update.edited_message is not None:
+            return
+        msg = update.effective_message
+        if msg is None:
+            return
         if not config.CHAT_ID:
-            await update.message.reply_text(
+            await msg.reply_text(
                 "Not set up yet. Send /myid and paste the number into "
                 "config.py as CHAT_ID, then restart the bot."
             )
             return
-        if str(update.effective_chat.id) != str(config.CHAT_ID):
+        # Authorise by USER in a PRIVATE chat, not just by chat id: if the bot
+        # is ever added to a group, a shared chat id must not let every member
+        # drive the laptop. For the normal private-chat setup the linked id is
+        # the user's own id, so this is unchanged for existing users.
+        chat = update.effective_chat
+        user = update.effective_user
+        if (chat is None or chat.type != "private" or user is None
+                or str(user.id) != str(config.CHAT_ID)):
             return
         return await func(update, context)
     return wrapper
@@ -496,7 +525,9 @@ HELP = (
 
 @owner_only
 async def cmd_help(update, context):
-    await update.message.reply_text(HELP)
+    if update.edited_message is not None:
+        return
+    await update.effective_message.reply_text(HELP)
 
 
 @owner_only
@@ -533,7 +564,7 @@ async def cmd_photo(update, context):
 
 
 @owner_only
-async def cmd_disk(update, context):
+def _disk_rows():
     rows = []
     for p in psutil.disk_partitions():
         try:
@@ -541,6 +572,13 @@ async def cmd_disk(update, context):
         except (PermissionError, OSError):
             continue
         rows.append(f"{p.device}  {u.percent:.0f}%  ({human_bytes(u.free)} free)")
+    return rows
+
+
+async def cmd_disk(update, context):
+    # disk_usage() can block for seconds on an offline network/USB drive, so run
+    # it off the event loop -- otherwise every command (even /abort) would wait.
+    rows = await asyncio.to_thread(_disk_rows)
     await update.message.reply_text("\n".join(rows) or "No drives found.")
 
 
@@ -558,8 +596,10 @@ async def cmd_where(update, context):
 
 async def cmd_myid(update, context):
     # deliberately NOT owner-only, so you can discover your id during setup
-    await update.message.reply_text(
-        f"Your chat id is: {update.effective_chat.id}\n"
+    if update.edited_message is not None:
+        return
+    await update.effective_message.reply_text(
+        f"Your chat id is: {update.effective_user.id}\n"
         "Paste it into config.py as CHAT_ID, then restart the bot."
     )
 
@@ -569,10 +609,16 @@ async def cmd_myid(update, context):
 async def check_internet(context: ContextTypes.DEFAULT_TYPE):
     up = await asyncio.to_thread(internet_up)
     prev = context.bot_data.get("net_up")
-    context.bot_data["net_up"] = up
     if prev is not None and up != prev:
         msg = "Internet restored." if up else "Internet lost."
-        await context.bot.send_message(config.CHAT_ID, msg)
+        try:
+            await context.bot.send_message(config.CHAT_ID, msg)
+        except Exception:
+            # If the send fails (typically the "Internet lost" case, when we
+            # have no connection), keep the old state so we retry next tick and
+            # the owner still learns about the outage once we're back.
+            return
+    context.bot_data["net_up"] = up
 
 
 async def hourly_report(context: ContextTypes.DEFAULT_TYPE):
@@ -586,17 +632,27 @@ class NewFileHandler(FileSystemEventHandler):
         self.loop = loop
         self.bot = bot
 
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        name = os.path.basename(event.src_path)
-        # skip browsers' half-finished download files
-        if name.endswith((".crdownload", ".tmp", ".part", ".partial")):
+    _TEMP = (".crdownload", ".tmp", ".part", ".partial", ".download")
+
+    def _announce(self, path):
+        name = os.path.basename(path)
+        if not name or name.endswith(self._TEMP):
             return
         asyncio.run_coroutine_threadsafe(
             self.bot.send_message(config.CHAT_ID, f"New file: {name}"),
             self.loop,
         )
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self._announce(event.src_path)
+
+    def on_moved(self, event):
+        # Chrome/Edge download to a .crdownload temp file and then RENAME it to
+        # the final name -- a move, not a create -- so without this the alert
+        # never fired for those downloads.
+        if not event.is_directory:
+            self._announce(event.dest_path)
 
 
 def _send_now(text, timeout=4):
@@ -634,8 +690,11 @@ async def cmd_shutdown(update, context):
     bits = [f"{len(inv['open'])} apps open on screen"]
     if batt is not None:
         bits.append(f"battery {batt.percent:.0f}%")
+    # Stamp the confirm button with the time, so a long-forgotten confirmation
+    # tapped out of the chat history days later can't shut the laptop down.
+    stamp = int(time.time())
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Confirm shutdown", callback_data="sd:yes"),
+        InlineKeyboardButton("Confirm shutdown", callback_data=f"sd:yes:{stamp}"),
         InlineKeyboardButton("Cancel", callback_data="sd:no"),
     ]])
     await update.message.reply_text(
@@ -649,15 +708,26 @@ async def on_button(update, context):
     """Handle the Confirm / Cancel buttons."""
     q = update.callback_query
     # Buttons carry their own authorisation check -- owner_only guards
-    # messages, not callbacks.
-    if not config.CHAT_ID or str(q.message.chat.id) != str(config.CHAT_ID):
+    # messages, not callbacks. Authorise by the user who tapped it, in a
+    # private chat, like the command handlers do.
+    user = q.from_user
+    chat = q.message.chat if q.message else None
+    if (not config.CHAT_ID or chat is None or chat.type != "private"
+            or user is None or str(user.id) != str(config.CHAT_ID)):
         await q.answer("Not allowed.", show_alert=True)
         return
     await q.answer()
     if q.data == "sd:no":
         await q.edit_message_text("Cancelled. Nothing was shut down.")
         return
-    if q.data == "sd:yes":
+    if q.data.startswith("sd:yes"):
+        parts = q.data.split(":")
+        stamp = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        if not stamp or time.time() - stamp > 120:
+            await q.edit_message_text(
+                "This confirmation has expired. Send /shutdown again if you "
+                "still want to shut down.")
+            return
         r = await asyncio.to_thread(do_shutdown, config.SHUTDOWN_DELAY)
         if r.returncode == 0:
             await q.edit_message_text(
@@ -699,8 +769,17 @@ async def app_report_job(context: ContextTypes.DEFAULT_TYPE):
 PROTECTED = {
     "system", "system idle process", "wininit.exe", "winlogon.exe",
     "csrss.exe", "services.exe", "lsass.exe", "smss.exe", "explorer.exe",
-    "svchost.exe", "dwm.exe", "fontdrvhost.exe", "python.exe", "pythonw.exe",
+    "svchost.exe", "dwm.exe", "fontdrvhost.exe", "sihost.exe", "ctfmon.exe",
+    "python.exe", "pythonw.exe",
+    # the packaged builds, so /kill can never take out the bot itself
+    "monitorbot.exe", "monitorbotdashboard.exe", "desktopcompanion.exe",
 }
+# Also protect whatever this process is actually called (handles renamed builds).
+try:
+    PROTECTED.add(os.path.basename(sys.executable).lower())
+    PROTECTED.add(psutil.Process().name().lower())
+except Exception:
+    pass
 
 # Media-key virtual codes, used for volume without any extra dependency.
 _VK = {"mute": 0xAD, "down": 0xAE, "up": 0xAF}
@@ -771,13 +850,15 @@ def show_notification(text):
 
 
 def speak(text):
-    """Text-to-speech through Windows' built-in voice."""
-    safe = str(text).replace("'", "''")
-    out = _powershell(
+    """Text-to-speech through Windows' built-in voice. The text is passed as an
+    environment variable, never spliced into the script, so it can't inject
+    PowerShell (curly quotes and all)."""
+    rc, _, _ = _run_ps(
         "Add-Type -AssemblyName System.Speech; "
         "(New-Object System.Speech.Synthesis.SpeechSynthesizer)"
-        f".Speak('{safe}')", timeout=30)
-    return out is not None
+        ".Speak($env:MB_SPEAK_TEXT)",
+        timeout=30, env_vars={"MB_SPEAK_TEXT": str(text)})
+    return rc == 0
 
 
 def get_clipboard():
@@ -934,8 +1015,9 @@ async def cmd_speak(update, context):
     if not msg:
         await update.message.reply_text("Usage: /speak something to say out loud")
         return
-    await asyncio.to_thread(speak, msg)
-    await update.message.reply_text("Said it out loud.")
+    ok = await asyncio.to_thread(speak, msg)
+    await update.message.reply_text(
+        "Said it out loud." if ok else "Couldn't speak (no audio/voice?).")
 
 
 @owner_only
@@ -1009,6 +1091,7 @@ async def cmd_recent(update, context):
     await update.message.reply_text("\n".join(lines))
 
 
+@owner_only
 async def cmd_ping(update, context):
     await update.message.reply_text("I'm awake. Laptop is on and the bot is running.")
 
@@ -1030,15 +1113,7 @@ async def cmd_ping(update, context):
 
 def _ps_run(script, timeout=60):
     """Run PowerShell and return (returncode, stdout, stderr)."""
-    try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=timeout, **PS_FLAGS)
-        return r.returncode, r.stdout.strip(), r.stderr.strip()
-    except subprocess.TimeoutExpired:
-        return -2, "", "timed out"
-    except (OSError, subprocess.SubprocessError) as e:
-        return -1, "", str(e)
+    return _run_ps(script, timeout)
 
 
 def defender_status_raw():
@@ -1112,13 +1187,20 @@ def build_threats():
     return text[:TG_LIMIT - 20] if len(text) > TG_LIMIT else text
 
 
+_SCAN_TYPES = {"QuickScan", "FullScan", "CustomScan"}
+
+
 def run_scan(scan_type="QuickScan", path=None, timeout=1800):
     if path:
-        safe = path.replace("'", "''")
-        script = f"Start-MpScan -ScanType CustomScan -ScanPath '{safe}'"
-    else:
-        script = f"Start-MpScan -ScanType {scan_type}"
-    rc, _, _ = _ps_run(script, timeout=timeout)
+        # The path is untrusted: pass it via the environment, not the script.
+        rc, _, _ = _run_ps(
+            "Start-MpScan -ScanType CustomScan -ScanPath $env:MB_SCAN_PATH",
+            timeout=timeout, env_vars={"MB_SCAN_PATH": path})
+        return rc
+    # scan_type is chosen from a fixed allow-list, never user text.
+    if scan_type not in _SCAN_TYPES:
+        scan_type = "QuickScan"
+    rc, _, _ = _ps_run(f"Start-MpScan -ScanType {scan_type}", timeout=timeout)
     return rc
 
 
@@ -1343,43 +1425,117 @@ async def threat_watch_job(context: ContextTypes.DEFAULT_TYPE):
             "-Descending | Select-Object -First 1; "
             "if($d){$d.InitialDetectionTime.ToString('o')}", timeout=30))
     state = _load_state()
-    seen = state.get("last_threat_seen")
-    if latest and latest != seen:
-        if seen is not None:        # don't alert on the very first baseline
-            threats = await asyncio.to_thread(build_threats)
-            await context.bot.send_message(
-                config.CHAT_ID,
-                "\U0001f6a8 Microsoft Defender detected a threat!\n\n" + threats)
-        state["last_threat_seen"] = latest
-        _save_state(state)
+    seen = state.get("last_threat_seen", "")
+    # "threat_init" records that we've taken a baseline at least once. Keying off
+    # it (rather than "is last_threat_seen still None?") means a clean machine
+    # with no detections yet still gets a proper baseline, so the FIRST real
+    # threat is alerted on -- and the baseline survives app reports now that
+    # state is merged, not overwritten.
+    if not state.get("threat_init"):
+        _update_state(last_threat_seen=latest or "", threat_init=True)
+    elif latest and latest != seen:
+        threats = await asyncio.to_thread(build_threats)
+        await context.bot.send_message(
+            config.CHAT_ID,
+            "\U0001f6a8 Microsoft Defender detected a threat!\n\n" + threats)
+        _update_state(last_threat_seen=latest)
 
 
-_CTRL_HANDLER = None      # must stay referenced or it gets collected
+_SHUTDOWN_WNDPROC = None   # must stay referenced or ctypes collects the callback
+_SHUTDOWN_THREAD = None
 
 
 def install_shutdown_guard():
     """Tell Telegram when Windows starts shutting this laptop down.
 
-    Windows delivers CTRL_SHUTDOWN_EVENT to console programs and then gives
-    them only a few seconds, so this sends one synchronous message and gets
-    out of the way. It cannot veto the shutdown -- see the README for why.
+    A hidden top-level window is created on its own thread and listens for
+    WM_QUERYENDSESSION / WM_ENDSESSION. The old console-handler approach could
+    never fire here: Windows stops delivering CTRL_SHUTDOWN_EVENT once a process
+    loads user32/gdi32 (PIL and ctypes both do), and the packaged build has no
+    console at all. A window gets these messages regardless, so the alert works
+    in every build. It doesn't veto the shutdown, just reports it.
     """
-    global _CTRL_HANDLER
+    global _SHUTDOWN_WNDPROC, _SHUTDOWN_THREAD
     if os.name != "nt" or not config.CHAT_ID:
         return
-    CTRL_LOGOFF, CTRL_SHUTDOWN = 5, 6
 
-    def handler(event):
-        if event in (CTRL_LOGOFF, CTRL_SHUTDOWN):
-            what = "Log-off" if event == CTRL_LOGOFF else "Shutdown"
-            _send_now(f"{what} started on this laptop at "
-                      f"{datetime.now():%Y-%m-%d %H:%M:%S}.\n"
-                      "This was started at the machine, not from Telegram.")
-        return False        # let Windows carry on
+    WM_QUERYENDSESSION = 0x0011
+    WM_ENDSESSION = 0x0016
+    WM_DESTROY = 0x0002
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    LRESULT = ctypes.c_ssize_t
+    WNDPROCTYPE = ctypes.WINFUNCTYPE(
+        LRESULT, ctypes.c_void_p, ctypes.c_uint,
+        ctypes.c_size_t, ctypes.c_ssize_t)
+
+    def wnd_proc(hwnd, msg, wparam, lparam):
+        if msg in (WM_QUERYENDSESSION, WM_ENDSESSION):
+            # fire once per shutdown, not for both messages
+            if not getattr(wnd_proc, "_sent", False):
+                wnd_proc._sent = True
+                _send_now(
+                    "Shutdown or log-off started on this laptop at "
+                    f"{datetime.now():%Y-%m-%d %H:%M:%S}.\n"
+                    "This was started at the machine, not from Telegram.")
+            if msg == WM_QUERYENDSESSION:
+                return 1          # allow Windows to carry on
+            return 0
+        if msg == WM_DESTROY:
+            user32.PostQuitMessage(0)
+            return 0
+        return user32.DefWindowProcW(ctypes.c_void_p(hwnd), msg,
+                                     ctypes.c_size_t(wparam),
+                                     ctypes.c_ssize_t(lparam))
+
+    class WNDCLASS(ctypes.Structure):
+        _fields_ = [
+            ("style", ctypes.c_uint),
+            ("lpfnWndProc", WNDPROCTYPE),
+            ("cbClsExtra", ctypes.c_int),
+            ("cbWndExtra", ctypes.c_int),
+            ("hInstance", ctypes.c_void_p),
+            ("hIcon", ctypes.c_void_p),
+            ("hCursor", ctypes.c_void_p),
+            ("hbrBackground", ctypes.c_void_p),
+            ("lpszMenuName", ctypes.c_wchar_p),
+            ("lpszClassName", ctypes.c_wchar_p),
+        ]
+
+    def pump():
+        _SHUTDOWN_WNDPROC_LOCAL = WNDPROCTYPE(wnd_proc)
+        global _SHUTDOWN_WNDPROC
+        _SHUTDOWN_WNDPROC = _SHUTDOWN_WNDPROC_LOCAL
+        hinst = kernel32.GetModuleHandleW(None)
+        wc = WNDCLASS()
+        wc.lpfnWndProc = _SHUTDOWN_WNDPROC_LOCAL
+        wc.hInstance = hinst
+        wc.lpszClassName = "MonitorBotShutdownGuard"
+        user32.RegisterClassW.restype = ctypes.c_ushort
+        if not user32.RegisterClassW(ctypes.byref(wc)):
+            return
+        user32.CreateWindowExW.restype = ctypes.c_void_p
+        hwnd = user32.CreateWindowExW(
+            0, "MonitorBotShutdownGuard", "MonitorBot", 0,
+            0, 0, 0, 0, None, None, hinst, None)
+        if not hwnd:
+            return
+        # Vista+: ask to be notified a little earlier in the shutdown sequence.
+        try:
+            user32.ShutdownBlockReasonCreate(
+                ctypes.c_void_p(hwnd), ctypes.c_wchar_p("Sending alert"))
+        except Exception:
+            pass
+        import ctypes.wintypes as wt
+        m = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(m), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(m))
+            user32.DispatchMessageW(ctypes.byref(m))
 
     try:
-        _CTRL_HANDLER = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)(handler)
-        ctypes.windll.kernel32.SetConsoleCtrlHandler(_CTRL_HANDLER, True)
+        _SHUTDOWN_THREAD = threading.Thread(target=pump, daemon=True)
+        _SHUTDOWN_THREAD.start()
         print("Shutdown guard armed.")
     except Exception as e:
         print("Could not arm shutdown guard:", e)
@@ -1482,13 +1638,69 @@ async def on_shutdown(app):
         obs.join(timeout=2)
 
 
+def _setup_logging():
+    """Send stdout/stderr and library logging to a rotating file.
+
+    Launched by Task Scheduler with pythonw.exe (or as a windowed exe), the
+    process has no console and sys.stdout/sys.stderr can be None -- a bare
+    print() or an uncaught traceback would then raise. We keep printing (handy
+    when run from a console) but also persist everything so the dashboard and a
+    crash post-mortem have a log to read.
+    """
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    class _StreamToLog:
+        def __init__(self, level):
+            self.level = level
+            self._buf = ""
+
+        def write(self, s):
+            self._buf += s
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                if line:
+                    logging.getLogger("stdout").log(self.level, line)
+
+        def flush(self):
+            pass
+
+    try:
+        handler = RotatingFileHandler(
+            suite_common.log_path(), maxBytes=512_000, backupCount=2,
+            encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(handler)
+        # Keep a console copy when there is one.
+        if sys.stderr is not None:
+            root.addHandler(logging.StreamHandler(sys.stderr))
+        if sys.stdout is None:
+            sys.stdout = _StreamToLog(logging.INFO)
+        if sys.stderr is None:
+            sys.stderr = _StreamToLog(logging.ERROR)
+    except Exception:
+        pass
+
+
 def main():
     # (`--setup` is handled at the top of the file, before config loads.)
+    _setup_logging()
+
     if not config.BOT_TOKEN or "PASTE" in config.BOT_TOKEN:
         raise SystemExit(
             "This bot isn't set up yet.\n"
             "Run the guided setup:   python monitor_bot.py --setup\n"
             "(or set BOT_TOKEN in config.py manually - get it from @BotFather).")
+
+    # One bot per machine: a second launch (e.g. auto-start plus the dashboard's
+    # Start button) must not poll the same token -- Telegram allows only one
+    # poller and the second would 409-conflict endlessly.
+    if not suite_common.acquire_single_instance(suite_common.BOT_MUTEX):
+        print("Monitor Bot is already running - not starting a second copy.")
+        return
 
     app = (
         Application.builder()
