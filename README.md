@@ -428,26 +428,37 @@ is a separate, lightweight script (`antitheft_sentinel.py`) that:
 - only *sends* messages, so it never clashes with the main bot (Telegram
   allows one command-poller per bot, but any number of senders).
 
-The interactive bot (screenshots, webcam, `/status`, and the rest) still
-starts at login, because before login there is nothing for it to do.
+The interactive bot (screenshots, webcam, `/status`, and the rest) starts at
+log on, running elevated so the security and anti-theft commands work.
 
-### Status: installed and active
+### Install it (one step, any machine)
 
-This is already set up on this machine. Failed-logon auditing is on, and a
-scheduled task called `LaptopMonitor-FailedLogin` runs as SYSTEM, triggered by
-the failed-login event, armed from boot. It was tested against the real log
-and confirmed to alert - including telling a wrong PIN apart from a wrong
-password.
-
-To set it up again (a fresh Windows install, another machine), open a normal
-PowerShell and run this - it pops a UAC prompt and does everything:
+The installer, `install_monitor.ps1`, sets up everything and uses no
+machine-specific paths - it discovers Python and installs itself into standard
+system folders. Right-click `install_monitor.ps1` and choose **Run with
+PowerShell** (accept the UAC prompt), or from a normal PowerShell run:
 
 ```
-Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy','Bypass','-File','D:\Mointor\install_antitheft.ps1'
+powershell -ExecutionPolicy Bypass -File install_monitor.ps1
 ```
 
-The installer switches on failed-logon auditing, registers the SYSTEM task,
-and prints any failed logins already in your log so you can see it working.
+It:
+
+- copies the app to `%ProgramFiles%\MonitorBot` (only administrators can write
+  there, so no one can plant code the elevated bot would load),
+- keeps your `config.py`, state and logs in `%ProgramData%\MonitorBot`, locked
+  down so normal users can't tamper with the config the elevated bot reads,
+- registers **`MonitorBot-Agent`** to start the bot at every log on, elevated
+  and in your session (so screenshots and webcam work) - this is the
+  "runs as admin, starts automatically" part,
+- registers **`MonitorBot-Sentinel`** as a SYSTEM task triggered by a failed
+  logon (4625/4776), armed from boot so it catches a thief at the lock screen,
+- switches on failed-logon auditing.
+
+Set your Telegram token afterwards via the Dashboard (run it **as
+administrator** so it can write the protected config) or by editing
+`%ProgramData%\MonitorBot\config.py`. To start the bot now without rebooting:
+`Start-ScheduledTask -TaskName 'MonitorBot-Agent'`.
 
 ### Test it
 
@@ -458,9 +469,14 @@ the camera at the lock screen, so most often you will get the text alert alone.
 
 ### To remove it
 
+Right-click `uninstall_monitor.ps1` and choose **Run with PowerShell**, or run:
+
 ```
-Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy','Bypass','-File','D:\Mointor\uninstall_antitheft.ps1'
+powershell -ExecutionPolicy Bypass -File uninstall_monitor.ps1
 ```
+
+It removes both scheduled tasks and the installed files. Add `-KeepConfig` to
+keep your `config.py` and logs.
 
 ### Honest limits
 

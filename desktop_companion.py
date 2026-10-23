@@ -1253,12 +1253,18 @@ def run_app(settings):
             self._place_initial()
 
         def _apply_startup(self, enabled, announce=True):
-            """Add/remove the startup entry. Returns True on success."""
+            """Add/remove the startup entry. Returns True on success, False on
+            failure, None when the Store build can't do it itself."""
             ok = set_run_at_startup(enabled)
-            self.s["start_with_windows"] = bool(enabled and ok)
+            # None = packaged build: don't claim it worked, and don't flip the
+            # saved flag as if it did.
+            self.s["start_with_windows"] = bool(enabled and ok is True)
             save_settings(self.s)
             if announce:
-                if not ok:
+                if ok is None:
+                    self.say("In the Store version, turn this on under Windows "
+                             "Settings > Apps > Startup.", 6)
+                elif not ok:
                     self.say("Couldn't change startup setting.", 4)
                 else:
                     self.say("Will start with Windows." if enabled
@@ -1806,10 +1812,20 @@ def play_sound(kind):
     threading.Thread(target=run, daemon=True).start()
 
 
+def _is_packaged_msix():
+    """True when running from a Microsoft Store (MSIX) package, where HKCU\\Run
+    is virtualised and never seen by Windows."""
+    return os.name == "nt" and "\\WindowsApps\\" in (sys.executable or "")
+
+
 def set_run_at_startup(enabled):
-    """Add/remove the app from the current-user startup. Returns True on success."""
+    """Add/remove the app from the current-user startup. Returns True on success,
+    or None when packaged (the Store build can't use HKCU\\Run; Windows controls
+    startup for it via Settings > Apps > Startup)."""
     if os.name != "nt":
         return False
+    if _is_packaged_msix():
+        return None
     try:
         import winreg
         key = winreg.OpenKey(

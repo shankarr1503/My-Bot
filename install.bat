@@ -58,6 +58,19 @@ if errorlevel 1 (
 )
 echo [OK] Requirements installed.
 
+REM --- 2b. Optional extras for automatic background-removal ----------
+REM onnxruntime + numpy let the app auto-cut-out the background of your own
+REM photos. If this fails (e.g. no wheel for your Python), the app still runs
+REM and just uses a simpler cut-out, so don't treat it as fatal.
+echo.
+echo Installing optional background-removal extras (this is large; it's OK if it skips)...
+python -m pip install -r "%~dp0requirements-companion.txt"
+if errorlevel 1 (
+  echo [i] Skipped the optional extras - the app will use the simple cut-out.
+) else (
+  echo [OK] Background-removal extras installed.
+)
+
 REM --- 3. Draw the app icon ------------------------------------------
 echo.
 echo Preparing the app icon...

@@ -11,8 +11,8 @@ name: Build Windows apps
 #
 # Where to get the files:
 #   Open a run in the Actions tab -> "Artifacts" at the bottom:
-#     DesktopCompanion-windows   <- the pet app (DesktopCompanion.exe inside)
-#     MonitorBot-windows         <- the Telegram bot
+#     DesktopCompanion-windows       <- the pet app (DesktopCompanion.exe inside)
+#     MonitorBotDashboard-windows    <- the dashboard + bot (one exe)
 
 on:
   push:

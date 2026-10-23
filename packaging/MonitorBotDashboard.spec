@@ -19,6 +19,7 @@ a = Analysis(
     binaries=[],
     datas=[(os.path.join(ROOT, "config.example.py"), ".")],
     hiddenimports=[
+        "suite_common",
         "bot_dashboard", "monitor_bot", "setup_wizard",
         "telegram.ext", "watchdog.observers", "psutil",
         "PIL._tkinter_finder",

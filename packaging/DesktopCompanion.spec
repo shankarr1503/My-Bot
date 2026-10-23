@@ -28,6 +28,7 @@ a = Analysis(
     binaries=bg_binaries,
     datas=bg_datas,
     hiddenimports=[
+        "suite_common",
         "pystray._win32",       # tray backend PyInstaller may miss
         "PIL._tkinter_finder",
     ] + bg_hidden,

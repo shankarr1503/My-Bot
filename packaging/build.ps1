@@ -12,7 +12,11 @@
       .\packaging\build.ps1 -SkipMsix       # just the .exe (no packaging)
 
     Prerequisites:
-      * Python 3.10+ with:  pip install -r requirements.txt pyinstaller
+      * Python 3.10+ with:
+          pip install -r requirements.txt -r requirements-companion.txt pyinstaller
+        (requirements-companion.txt = onnxruntime + numpy; the spec bundles them
+        for the automatic background-removal feature, so the build needs them
+        installed or that feature ships missing.)
       * Windows 10/11 SDK (for makeappx.exe / signtool.exe) when building MSIX.
         Install via Visual Studio, or: winget install Microsoft.WindowsSDK
 #>
